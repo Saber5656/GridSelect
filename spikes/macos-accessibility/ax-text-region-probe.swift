@@ -25,7 +25,8 @@ func usage() {
       swift spikes/macos-accessibility/ax-text-region-probe.swift [--rect=x,y,w,h] [--max-chars=N] [--focused-only] [--prompt-permission]
 
     Notes:
-      - Coordinates are global screen coordinates.
+      - Coordinates are global top-left-origin screen coordinates (Core
+        Graphics space), as consumed by AXUIElementCopyElementAtPosition.
       - The probe reports capabilities and small samples only.
       - It does not capture screenshots or mutate native selections.
     """)

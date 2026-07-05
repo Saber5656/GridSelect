@@ -2,12 +2,14 @@
 
 Issue: [#6](https://github.com/Saber5656/GridSelect/issues/6)
 Date: 2026-07-05
-Status: Spike complete
+Status: Desk research complete; on-device fixture validation pending
 Scope: Read-only macOS Accessibility API text extraction for rectangular text regions
 
 ## Conclusion
 
-A no-OCR macOS MVP is feasible for monospace rectangular text regions, but only as a capability-gated Accessibility API path, not as a universal screen-text extractor.
+Based on the documented API surface, a no-OCR macOS MVP is expected to be feasible for monospace rectangular text regions, but only as a capability-gated Accessibility API path, not as a universal screen-text extractor.
+
+This is a desk-research conclusion. The bundled probe could not query live app trees in the spike environment (`accessibilityTrusted: false`), so no target application has been measured yet. Issue #6's acceptance criteria require testing at least three target app categories; the final feasibility call stays open until the manual fixture procedure below has been run with Accessibility permission granted.
 
 The practical MVP should target focused or hit-tested text elements that expose all of the following:
 
@@ -100,14 +102,15 @@ Apple documents these ranges as character ranges, not byte ranges. Production sl
 
 ### 4. Range Geometry
 
-`kAXBoundsForRangeParameterizedAttribute` is the key geometry API. Apple documents it as the bounding rectangle a sighted user would see on the display screen, in pixels.
+`kAXBoundsForRangeParameterizedAttribute` is the key geometry API. Apple's legacy attribute reference describes it as the bounding rectangle a sighted user would see on the display screen, "in pixels"; in practice AX geometry is reported in global **top-left-origin** screen coordinates matching Core Graphics display space, and on modern systems these behave as point values rather than backing pixels. The points-vs-pixels question must be settled empirically on a Retina display as part of fixture validation.
 
 The MVP should treat coordinate conversion as a first-class implementation concern:
 
 | Concern | Constraint |
 |---|---|
-| Overlay coordinates | AppKit overlay windows normally reason in points. |
-| AX range bounds | `kAXBoundsForRangeParameterizedAttribute` reports screen pixels. |
+| Overlay coordinates | AppKit overlay windows reason in points with a **bottom-left** screen origin; the issue #7 spike returns `SelectionRect` in that space. |
+| AX range bounds | Global **top-left-origin** screen coordinates (legacy docs say "pixels"); confirm point/pixel behavior on Retina during validation. |
+| Y-axis flip | AppKit (bottom-left) and AX/CG (top-left) origins differ; the flip must happen exactly once, at the boundary defined by the issue #9 coordinate contract. |
 | Multi-display layouts | Rectangles must be normalized to the same global coordinate space before intersection. |
 | Retina displays | Backing scale must be tested; never assume points equal pixels. |
 
@@ -118,7 +121,9 @@ The MVP should treat coordinate conversion as a first-class implementation conce
 Recommended MVP algorithm:
 
 1. Verify Accessibility trust.
-2. Capture the user rectangle in global screen coordinates.
+2. Capture the user rectangle in global top-left-origin screen coordinates,
+   converted once from the overlay's AppKit bottom-left space per the issue #9
+   coordinate contract.
 3. Build candidate AX elements from the focused element and the element at the rectangle center.
 4. Pick the first candidate that supports:
    - `kAXStringForRangeParameterizedAttribute`
@@ -169,6 +174,8 @@ The production extractor should enforce timeouts and maximum scanned character c
 | Native editor / text area | High for AppKit text views; medium for custom editors. | `AXTextArea`-like elements are likely to expose visible range and bounds. Monaco/Electron editors may need per-app verification. |
 | Browser plain-text page | Medium. | Plain text, `<pre>`, and contenteditable regions may expose text. Custom web apps, virtualized rows, and canvas terminals often lack useful range geometry. |
 | Log viewer | High for native text/log views; medium for web/Electron virtualized lists; low for canvas-only viewers. | MVP should support visible monospace log panes that expose range text and bounds. |
+
+These ratings are desk-research expectations, not measured results; each cell must be confirmed with the probe (manual fixture procedure below) before implementation depends on it.
 
 This is enough for a useful no-OCR MVP if GridSelect explicitly scopes support to capability-positive monospace targets and reports unsupported apps clearly.
 
