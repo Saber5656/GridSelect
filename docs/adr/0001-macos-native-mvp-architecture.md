@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for the initial macOS MVP.
+Proposed for the initial macOS MVP. Maintainer merge of this PR constitutes
+acceptance; flip this line to "Accepted" in the next ADR-touching change.
 
 ## Context
 
