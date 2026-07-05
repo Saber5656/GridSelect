@@ -156,6 +156,10 @@ coordinate space and normalize on every update.
 ```swift
 struct SelectionRect {
     var screenID: CGDirectDisplayID
+    /// AppKit screen coordinates: global space, bottom-left origin, in points,
+    /// as produced by `window.convertToScreen(_:)`. Consumers that intersect
+    /// this rect with AX/CG geometry (top-left origin) must apply the y-flip
+    /// defined by the issue #9 coordinate contract.
     var rectInScreenPoints: CGRect
 }
 
@@ -164,6 +168,10 @@ final class SelectionOverlayView: NSView {
     private var current: CGPoint?
 
     override var acceptsFirstResponder: Bool { true }
+
+    // Without this, the first click on a not-yet-key panel can be consumed by
+    // window activation instead of starting the drag ("swallowed first click").
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
         anchor = convert(event.locationInWindow, from: nil)
@@ -228,6 +236,13 @@ Recommended conversion flow:
 6. Only when a later screenshot/OCR pipeline needs pixels, convert with the
    corresponding `NSWindow`, `NSView`, or `NSScreen` backing conversion API.
 
+Output contract: `SelectionRect.rectInScreenPoints` is AppKit screen space —
+global coordinates, **bottom-left origin**, in points. The Accessibility
+extraction path (issue #6 spike) intersects this rectangle with AX range bounds,
+which use a **top-left origin**. That y-flip (and any point/pixel normalization)
+must be performed exactly once, at the boundary defined by the coordinate
+contract in issue #9 — not ad hoc inside individual components.
+
 Important coordinate notes:
 
 | Topic | Guidance |
@@ -235,6 +250,7 @@ Important coordinate notes:
 | AppKit points | Use points for overlay layout and drawing. |
 | Flipped views | If `SelectionOverlayView.isFlipped == true`, centralize conversion so y-axis assumptions do not leak. |
 | Screen coordinates | Use `NSScreen.frame` for full-screen overlays; `visibleFrame` excludes menu bar/dock areas and is not suitable for selecting text under those regions. |
+| Y-axis flip vs AX/CG | AppKit screen coordinates use a bottom-left origin; Accessibility (`kAXBoundsForRangeParameterizedAttribute`) and Core Graphics (`CGDisplayBounds`, `CGEvent`) use a top-left origin. Keep `SelectionRect` AppKit-native and apply the flip once at the issue #9 contract boundary. |
 | Core Graphics display bounds | If later bridging to `CGDisplayBounds`, be explicit about coordinate origins and transforms. |
 | Pixel alignment | Use `convertRectToBacking` / `backingAlignedRect` for pixel-sensitive work; do not multiply by `backingScaleFactor` throughout the app. |
 
@@ -317,6 +333,7 @@ Manual validation should cover:
 | Scenario | Expected result |
 |---|---|
 | Terminal/editor/browser normal window | Overlay appears above the target and drag updates the rectangle smoothly. |
+| First click immediately after the overlay appears | The very first mouse down starts the drag; it is not consumed by window/key activation. |
 | Escape during drag | Overlay closes with no selection. |
 | Mouse-up confirm | Overlay closes and returns a non-empty rect in screen points. |
 | External display | Overlay appears on every display; selection is associated with the display where the drag began. |
@@ -329,6 +346,7 @@ Manual validation should cover:
 | Risk | Mitigation |
 |---|---|
 | `.statusBar` may not appear over every full-screen Space. | Test `.screenSaver` as a session-only fallback and document exact OS behavior. |
+| The first click on a non-activating panel can be consumed by activation instead of starting the drag. | Override `acceptsFirstMouse(for:)` in the overlay view and verify the first-drag scenario in the prototype checklist. |
 | Non-activating keyboard handling can be inconsistent. | Use mouse-up confirm for MVP; add local monitor; consider explicit UI affordance before global monitoring. |
 | Stage Manager/Spaces behavior varies by system settings. | Include `screensHaveSeparateSpaces`, full-screen, and Stage Manager states in manual test notes. |
 | Future screenshot/OCR needs pixel-perfect conversion. | Keep this spike point-based and defer backing conversion to capture implementation. |
@@ -344,7 +362,8 @@ Implement a short-lived `SelectionOverlaySession` that:
 3. Captures drag events locally in the overlay view.
 4. Confirms on mouse up when the normalized rectangle exceeds a small threshold.
 5. Cancels on Escape or invalid display changes.
-6. Returns a `SelectionRect` in screen-space points plus the owning display ID.
+6. Returns a `SelectionRect` in AppKit screen-space points (bottom-left origin)
+   plus the owning display ID, per the coordinate contract to be fixed in #9.
 7. Closes all overlay panels before any future capture/OCR step begins.
 
 This keeps the issue #7 spike focused on macOS overlay behavior and leaves OCR,
