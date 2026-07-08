@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "browser-plain-text-area",
+  "category": "browser-plain-text-area",
+  "description": "Feb and Mar columns from a browser textarea or preformatted text region.",
+  "input": "input.txt",
+  "expectedPlainTextOutput": "expected.txt",
+  "selection": {
+    "indexing": "zero-based half-open ranges over visible monospace text",
+    "rows": {
+      "start": 0,
+      "end": 5
+    },
+    "columns": {
+      "start": 16,
+      "end": 25
+    }
+  },
+  "manualTargets": [
+    "Safari textarea",
+    "Chrome textarea",
+    "Safari pre",
+    "Chrome pre"
+  ],
+  "notes": [
+    "Keep browser zoom at 100%.",
+    "Canvas, virtualized, or richly styled web apps are unsupported for MVP unless they expose text and range geometry."
+  ]
+}

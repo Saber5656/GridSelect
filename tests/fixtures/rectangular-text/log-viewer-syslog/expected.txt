@@ -1,0 +1,4 @@
+INFO  auth    login-ok
+WARN  api     retry-ok
+ERROR worker  syncfail
+INFO  api     query-ok

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "terminal-aligned-output",
+  "category": "terminal",
+  "description": "TTY and TIME columns from aligned process output.",
+  "input": "input.txt",
+  "expectedPlainTextOutput": "expected.txt",
+  "selection": {
+    "indexing": "zero-based half-open ranges over visible monospace text",
+    "rows": {
+      "start": 2,
+      "end": 6
+    },
+    "columns": {
+      "start": 6,
+      "end": 24
+    }
+  },
+  "manualTargets": [
+    "Terminal.app",
+    "iTerm2"
+  ],
+  "notes": [
+    "Keep the terminal wide enough to avoid wrapping.",
+    "Warp and other GPU/custom-rendered terminals need separate AX capability notes."
+  ]
+}

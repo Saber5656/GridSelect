@@ -1,0 +1,5 @@
+timestamp           level service event
+2026-07-08 09:15:01 INFO  auth    login-ok
+2026-07-08 09:15:02 WARN  api     retry-ok
+2026-07-08 09:15:03 ERROR worker  syncfail
+2026-07-08 09:15:04 INFO  api     query-ok
