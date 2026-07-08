@@ -1,0 +1,62 @@
+name: Feature request
+description: Propose a focused GridSelect improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GridSelect is pre-alpha and macOS-first. Please keep proposals aligned with the MVP unless the request is explicitly post-MVP.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What rectangular text selection workflow would this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest useful change.
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Include the macOS version if this depends on OS behavior.
+      placeholder: "macOS 15.5"
+  - type: input
+    id: target-app
+    attributes:
+      label: Target app or surface
+      description: Name the app, terminal, editor, browser, or log viewer involved.
+      placeholder: "Terminal.app, iTerm2, VS Code terminal, browser text area"
+  - type: dropdown
+    id: permission-state
+    attributes:
+      label: Permission state
+      description: Choose the expected permission state if relevant.
+      options:
+        - Accessibility granted
+        - Accessibility not granted
+        - Permission prompt shown
+        - Unknown
+        - Not applicable
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope fit
+      options:
+        - macOS MVP
+        - Post-MVP
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional notes on simpler approaches or tradeoffs.

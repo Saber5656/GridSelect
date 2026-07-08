@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible problem with GridSelect.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include vulnerability details here. Use SECURITY.md for security reports.
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Include the full macOS version and hardware if relevant.
+      placeholder: "macOS 15.5 on Apple Silicon"
+    validations:
+      required: true
+  - type: input
+    id: target-app
+    attributes:
+      label: Target app or surface
+      description: Name the app or surface where the problem happened.
+      placeholder: "Terminal.app, iTerm2, VS Code terminal, browser text area"
+    validations:
+      required: true
+  - type: dropdown
+    id: permission-state
+    attributes:
+      label: Permission state
+      description: Choose the closest known state when the issue happened.
+      options:
+        - Accessibility granted
+        - Accessibility not granted
+        - Permission prompt shown
+        - Unknown
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Describe the exact steps needed to reproduce the problem.
+      placeholder: |
+        1. Open ...
+        2. Invoke GridSelect ...
+        3. Drag over ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: sample-text
+    attributes:
+      label: Sample text or fixture
+      description: Include a minimal plain-text sample if it helps reproduce the issue. Do not include secrets.
+      render: text
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Add screenshots only if they do not expose private data.
