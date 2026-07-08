@@ -7,7 +7,8 @@ Issue: https://github.com/Saber5656/GridSelect/issues/7
 This spike documents an MVP approach for drawing and adjusting a rectangular
 selection region above other macOS apps. It intentionally excludes OCR,
 screenshot saving, image parsing, and app-specific overlay optimization. It also
-does not scaffold an app.
+does not scaffold the production app, but it includes a minimal standalone
+overlay prototype for validating the core window and rectangle behavior.
 
 The goal is to identify the window, input, focus, coordinate, multi-display,
 Retina, and permission decisions that should shape the first prototype.
@@ -98,10 +99,13 @@ func makeOverlayPanel(for screen: NSScreen) -> SelectionOverlayPanel {
     panel.hasShadow = false
     panel.hidesOnDeactivate = false
     panel.ignoresMouseEvents = false
-    panel.contentView = SelectionOverlayView(
+    let overlayView = SelectionOverlayView(
         frame: NSRect(origin: .zero, size: screen.frame.size)
     )
+    panel.contentView = overlayView
     panel.orderFrontRegardless()
+    panel.makeKey()
+    panel.makeFirstResponder(overlayView)
     return panel
 }
 ```
@@ -112,7 +116,7 @@ Notes:
 |---|---|
 | `canBecomeKey` | Borderless panels often need an explicit key-window strategy for Escape/Return handling. |
 | `canBecomeMain = false` | The overlay is a transient tool, not the document/main surface. |
-| `orderFrontRegardless()` | Shows the overlay without activating GridSelect or changing main/key windows by itself. |
+| `orderFrontRegardless()` | Shows the overlay without activating GridSelect or changing main/key windows by itself; pair it with `makeKey()`, `makeFirstResponder(_:)`, or a local event monitor when Escape/Return must be handled by the overlay. |
 | `ignoresMouseEvents = false` | Required for drag capture. For passive display after selection, it can be set to `true` or the panel can be closed. |
 
 ## Input handling
@@ -123,7 +127,7 @@ State machine:
 
 | State | Event | Action |
 |---|---|---|
-| `idle` | Mouse down inside overlay | Record anchor in window coordinates and transition to `dragging`. |
+| `idle` | Mouse down inside overlay | Record anchor in overlay view coordinates and transition to `dragging`. |
 | `dragging` | Mouse dragged | Normalize anchor/current point into a rectangle and redraw. |
 | `dragging` | Mouse up | Either confirm immediately or transition to `adjusting`, depending on UX choice. |
 | `dragging` or `adjusting` | Escape | Cancel, close panels, return no selection. |
@@ -230,10 +234,13 @@ Recommended conversion flow:
 
 1. Receive `event.locationInWindow`.
 2. Convert to overlay view coordinates with `view.convert(_:from: nil)`.
-3. Normalize the rectangle in view/window coordinates.
-4. Convert the rectangle to screen coordinates with `window.convertToScreen(_:)`.
-5. Attach the source `NSScreen` / `CGDirectDisplayID`.
-6. Only when a later screenshot/OCR pipeline needs pixels, convert with the
+3. Normalize the rectangle in overlay view coordinates.
+4. Convert the normalized view rectangle to window coordinates with
+   `view.convert(_:to: nil)`.
+5. Convert the window rectangle to screen coordinates with
+   `window.convertToScreen(_:)`.
+6. Attach the source `NSScreen` / `CGDirectDisplayID`.
+7. Only when a later screenshot/OCR pipeline needs pixels, convert with the
    corresponding `NSWindow`, `NSView`, or `NSScreen` backing conversion API.
 
 Output contract: `SelectionRect.rectInScreenPoints` is AppKit screen space —
@@ -296,7 +303,9 @@ Practical approach:
 1. Record the previously active app/window only if needed for diagnostics; do
    not attempt to manipulate other apps.
 2. Show non-activating panels with `orderFrontRegardless()`.
-3. Make the overlay panel key only if required for Escape/Return.
+3. Make the overlay panel key and set the overlay view as first responder for
+   Escape/Return; keep a local key monitor as a fallback if prototype testing
+   shows the non-activating panel does not receive key events consistently.
 4. Close panels immediately on cancel/confirm.
 5. Do not call `NSApp.activate(ignoringOtherApps:)` in the default MVP path.
 
@@ -327,6 +336,26 @@ separate capture spike so the overlay UX does not inherit unnecessary privacy
 friction.
 
 ## MVP prototype checklist
+
+This PR includes a minimal prototype at
+`spikes/macos-overlay/overlay-rectangle-prototype.swift`. It is intentionally a
+single-file AppKit prototype, not production scaffolding.
+
+Run syntax/type validation:
+
+```sh
+swiftc -typecheck spikes/macos-overlay/overlay-rectangle-prototype.swift
+```
+
+Run the interactive prototype from a GUI session:
+
+```sh
+swift spikes/macos-overlay/overlay-rectangle-prototype.swift
+```
+
+The prototype keeps anchor/current points in overlay view coordinates, converts
+the normalized rectangle through view -> window -> screen, makes the panel key
+for `keyDown`, and installs a local key monitor fallback for Escape.
 
 Manual validation should cover:
 
