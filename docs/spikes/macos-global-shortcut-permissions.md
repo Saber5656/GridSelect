@@ -1,6 +1,6 @@
 # macOS Global Shortcut and Permission Flow Spike
 
-Date: 2026-07-05 (revised 2026-07-06 after design review against ADR 0001)
+Date: 2026-07-05
 
 Issue: [#8 Spike global shortcut and permission flow on macOS](https://github.com/Saber5656/GridSelect/issues/8)
 
