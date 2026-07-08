@@ -17,6 +17,10 @@ enum AXProbeResult<Value> {
     case failure(AXError)
 }
 
+func writeStderr(_ message: String) {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+}
+
 func usage() {
     print("""
     Read-only macOS Accessibility text-region probe.
@@ -27,6 +31,8 @@ func usage() {
     Notes:
       - Coordinates are global top-left-origin screen coordinates (Core
         Graphics space), as consumed by AXUIElementCopyElementAtPosition.
+      - Probe output can include arbitrary text exposed by other apps,
+        including secrets. Run it only against prepared fixtures.
       - The probe reports capabilities and small samples only.
       - It does not capture screenshots or mutate native selections.
     """)
@@ -46,12 +52,16 @@ func parseOptions() -> Options {
             let value = String(argument.dropFirst("--max-chars=".count))
             if let parsed = Int(value), parsed > 0 {
                 options.maxChars = parsed
+            } else {
+                writeStderr("Invalid --max-chars=\(value). Expected a positive integer.")
             }
         } else if argument.hasPrefix("--rect=") {
             let value = String(argument.dropFirst("--rect=".count))
             let parts = value.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
-            if parts.count == 4 {
+            if parts.count == 4, parts[2] > 0, parts[3] > 0 {
                 options.rect = CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
+            } else {
+                writeStderr("Invalid --rect=\(value). Expected x,y,width,height with positive width/height.")
             }
         }
     }
@@ -148,6 +158,11 @@ func axValue(range: CFRange) -> AXValue? {
     return AXValueCreate(.cfRange, &mutableRange)
 }
 
+func axValue(point: CGPoint) -> AXValue? {
+    var mutablePoint = point
+    return AXValueCreate(.cgPoint, &mutablePoint)
+}
+
 func visibleRange(_ element: AXUIElement) -> CFRange? {
     guard case .success(let value) = copyAttribute(element, kAXVisibleCharacterRangeAttribute) else {
         return nil
@@ -194,6 +209,53 @@ func boundsForRange(_ element: AXUIElement, _ range: CFRange) -> AXProbeResult<C
     }
 }
 
+func rangeForPosition(_ element: AXUIElement, _ point: CGPoint) -> AXProbeResult<CFRange> {
+    guard let parameter = axValue(point: point) else {
+        return .failure(.illegalArgument)
+    }
+
+    switch copyParameterizedAttribute(element, kAXRangeForPositionParameterizedAttribute, parameter: parameter) {
+    case .success(let value):
+        if let range = rangeFromAXValue(value) {
+            return .success(range)
+        }
+        return .failure(.cannotComplete)
+    case .failure(let error):
+        return .failure(error)
+    }
+}
+
+func rangeForRect(_ element: AXUIElement, _ rect: CGRect, maxLength: Int) -> AXProbeResult<CFRange> {
+    let points = [
+        CGPoint(x: rect.minX, y: rect.minY),
+        CGPoint(x: rect.maxX, y: rect.minY),
+        CGPoint(x: rect.minX, y: rect.maxY),
+        CGPoint(x: rect.maxX, y: rect.maxY)
+    ]
+
+    var ranges: [CFRange] = []
+    var lastError: AXError = .attributeUnsupported
+    for point in points {
+        switch rangeForPosition(element, point) {
+        case .success(let range) where range.location >= 0:
+            ranges.append(range)
+        case .success:
+            continue
+        case .failure(let error):
+            lastError = error
+        }
+    }
+
+    guard !ranges.isEmpty else {
+        return .failure(lastError)
+    }
+
+    let lowerBound = ranges.map(\.location).min() ?? 0
+    let upperBound = ranges.map { $0.location + max($0.length, 1) }.max() ?? lowerBound
+    let length = min(max(upperBound - lowerBound, 0), maxLength)
+    return .success(CFRange(location: lowerBound, length: length))
+}
+
 func lineForIndex(_ element: AXUIElement, _ index: Int) -> Int? {
     let parameter = NSNumber(value: index)
     guard case .success(let value) = copyParameterizedAttribute(
@@ -222,17 +284,34 @@ func clippedRange(_ range: CFRange, maxLength: Int) -> CFRange {
     CFRange(location: range.location, length: min(range.length, maxLength))
 }
 
+func isSecureTextElement(role: String, subrole: String?) -> Bool {
+    let fields = [role, subrole ?? ""].map { $0.lowercased() }
+    return fields.contains { $0.contains("secure") && $0.contains("text") }
+}
+
 func describe(_ element: AXUIElement, label: String, options: Options) {
     let attributes = attributeNames(element)
     let parameterized = parameterizedAttributeNames(element)
+    let role = stringAttribute(element, kAXRoleAttribute) ?? "<unknown>"
+    let subrole = stringAttribute(element, kAXSubroleAttribute)
 
     print("## \(label)")
-    print("role: \(stringAttribute(element, kAXRoleAttribute) ?? "<unknown>")")
+    print("role: \(role)")
+    if let subrole, !subrole.isEmpty {
+        print("subrole: \(subrole)")
+    }
     if let title = stringAttribute(element, kAXTitleAttribute), !title.isEmpty {
         print("title: \(title)")
     }
     print("attributes: \(attributes.joined(separator: ", "))")
     print("parameterizedAttributes: \(parameterized.joined(separator: ", "))")
+
+    if isSecureTextElement(role: role, subrole: subrole) {
+        print("secureTextField: true")
+        print("textRangeProbing: skipped")
+        print("")
+        return
+    }
 
     if let selected = selectedTextRange(element) {
         print("selectedTextRange: location=\(selected.location) length=\(selected.length)")
@@ -255,11 +334,35 @@ func describe(_ element: AXUIElement, label: String, options: Options) {
         print("visibleCharacterRange: <missing>")
     }
 
+    if let rect = options.rect {
+        switch rangeForRect(element, rect, maxLength: options.maxChars) {
+        case .success(let rectRange):
+            print("rectCharacterRange: location=\(rectRange.location) length=\(rectRange.length)")
+            switch stringForRange(element, rectRange) {
+            case .success(let sample):
+                print("rectStringForRangeSampleLengthUTF16: \(sample.utf16.count)")
+                print("rectStringForRangeSample:")
+                print(sample)
+            case .failure(let error):
+                print("rectStringForRangeError: \(error.rawValue) \(error)")
+            }
+
+            switch boundsForRange(element, rectRange) {
+            case .success(let rect):
+                print("rectBoundsForRangeSample: x=\(rect.origin.x) y=\(rect.origin.y) w=\(rect.width) h=\(rect.height)")
+            case .failure(let error):
+                print("rectBoundsForRangeError: \(error.rawValue) \(error)")
+            }
+        case .failure(let error):
+            print("rectCharacterRangeError: \(error.rawValue) \(error)")
+        }
+    }
+
     if let range {
         let sampleRange = clippedRange(range, maxLength: options.maxChars)
         switch stringForRange(element, sampleRange) {
         case .success(let sample):
-            print("stringForRangeSampleLength: \(sample.count)")
+            print("stringForRangeSampleLengthUTF16: \(sample.utf16.count)")
             print("stringForRangeSample:")
             print(sample)
         case .failure(let error):

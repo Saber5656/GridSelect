@@ -2,14 +2,14 @@
 
 Issue: [#6](https://github.com/Saber5656/GridSelect/issues/6)
 Date: 2026-07-05
-Status: Desk research complete; on-device fixture validation pending
+Status: Desk research complete; live fixture validation blocked until Accessibility permission can be granted to the probe host
 Scope: Read-only macOS Accessibility API text extraction for rectangular text regions
 
 ## Conclusion
 
 Based on the documented API surface, a no-OCR macOS MVP is expected to be feasible for monospace rectangular text regions, but only as a capability-gated Accessibility API path, not as a universal screen-text extractor.
 
-This is a desk-research conclusion. The bundled probe could not query live app trees in the spike environment (`accessibilityTrusted: false`), so no target application has been measured yet. Issue #6's acceptance criteria require testing at least three target app categories; the final feasibility call stays open until the manual fixture procedure below has been run with Accessibility permission granted.
+This is a desk-research conclusion. The bundled probe could not query live app trees in the spike environment (`accessibilityTrusted: false`), so no target application has produced a supported/partial/unsupported measurement yet. Issue #6's acceptance criteria require testing at least three target app categories; the final feasibility call stays open until the manual fixture procedure below has been run with Accessibility permission granted.
 
 The practical MVP should target focused or hit-tested text elements that expose all of the following:
 
@@ -192,6 +192,32 @@ Use the probe below against at least four visible monospace fixtures after grant
 
 Record each app as `supported`, `partial`, or `unsupported` based on the required capability set, not based on visual appearance.
 
+### Fixture Validation Status
+
+As of 2026-07-08, live fixture runs are blocked in the current environment
+because the probe host is not trusted for Accessibility:
+
+```sh
+swift spikes/macos-accessibility/ax-text-region-probe.swift --focused-only --max-chars=500
+```
+
+Result:
+
+```text
+accessibilityTrusted: false
+Grant Accessibility permission, then run again.
+```
+
+The fixture matrix therefore records the current state as blocked rather than
+claiming target support:
+
+| Fixture | Status | Evidence | Required next step |
+|---|---|---|---|
+| Terminal | Blocked | Accessibility trust is false before app-tree reads. | Grant Accessibility to the terminal or signed GridSelect probe host, then rerun the focused and `--rect=` probes. |
+| Native editor | Blocked | Accessibility trust is false before app-tree reads. | Grant Accessibility and capture text role, range text, bounds, visible range, and line mapping results. |
+| Browser plain text | Blocked | Accessibility trust is false before app-tree reads. | Grant Accessibility and test Safari/Chrome plain text or `<pre>` content with the rectangle probe. |
+| Log viewer-like pane | Blocked | Accessibility trust is false before app-tree reads. | Grant Accessibility and record whether visible monospace rows expose range text and geometry. |
+
 ## Probe
 
 This spike includes a lightweight read-only probe:
@@ -207,7 +233,14 @@ swift spikes/macos-accessibility/ax-text-region-probe.swift --focused-only
 swift spikes/macos-accessibility/ax-text-region-probe.swift --prompt-permission
 ```
 
-The probe does not scaffold the app. It only reports Accessibility permission status, focused/hit-tested element roles, supported attributes, supported parameterized attributes, visible ranges, sample text, and sample bounds.
+The probe does not scaffold the app. It only reports Accessibility permission status, focused/hit-tested element roles, supported attributes, supported parameterized attributes, visible ranges, rectangle-derived ranges when `--rect=` can be mapped through `kAXRangeForPositionParameterizedAttribute`, sample text, and sample bounds.
+
+Safety behavior:
+
+- The probe warns that stdout can include arbitrary text exposed by other apps.
+- Secure text fields are rejected before selected/visible/string range probing.
+- Invalid `--rect=` and `--max-chars=` values are reported on stderr.
+- Sample lengths are reported as UTF-16 length to match Accessibility range semantics more closely than Swift `Character` counts.
 
 ## Verification
 
@@ -218,6 +251,7 @@ The probe does not scaffold the app. It only reports Accessibility permission st
 | OCR/screenshots/PDF/image analysis | Kept out of scope |
 | Probe syntax | `swift spikes/macos-accessibility/ax-text-region-probe.swift --help` |
 | Local permission probe | `swift spikes/macos-accessibility/ax-text-region-probe.swift --focused-only --max-chars=500` returned `accessibilityTrusted: false`; live app tree testing requires granting Accessibility permission |
+| Fixture matrix | Terminal, native editor, browser plain text, and log viewer-like panes are recorded as blocked until Accessibility permission is granted |
 
 ## Follow-Up Constraints
 
