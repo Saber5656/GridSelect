@@ -208,6 +208,18 @@ accessibilityTrusted: false
 Grant Accessibility permission, then run again.
 ```
 
+As of 2026-07-09, the validation worktree still cannot read live app trees, but
+the probe now reports host identity hints before exiting:
+
+```text
+accessibilityTrusted: false
+permissionHostProcessName: swift-frontend
+permissionHostBundleIdentifier: <none>
+permissionHostLaunchPath: spikes/macos-accessibility/ax-text-region-probe.swift
+permissionHostGrantHint: grant Accessibility to the launching terminal app, or to a signed probe/app host if this script is wrapped in one.
+Grant Accessibility permission, then run again.
+```
+
 The fixture matrix therefore records the current state as blocked rather than
 claiming target support:
 
@@ -217,6 +229,60 @@ claiming target support:
 | Native editor | Blocked | Accessibility trust is false before app-tree reads. | Grant Accessibility and capture text role, range text, bounds, visible range, and line mapping results. |
 | Browser plain text | Blocked | Accessibility trust is false before app-tree reads. | Grant Accessibility and test Safari/Chrome plain text or `<pre>` content with the rectangle probe. |
 | Log viewer-like pane | Blocked | Accessibility trust is false before app-tree reads. | Grant Accessibility and record whether visible monospace rows expose range text and geometry. |
+
+### Permission-Gated Validation Runbook
+
+Use this runbook when a maintainer or tester can grant Accessibility permission
+on a normal macOS GUI session. Do not treat a visually correct fixture as
+supported unless the probe reports range text and range geometry.
+
+1. Launch the probe from the same terminal or signed app host that will receive
+   Accessibility permission:
+
+   ```sh
+   swift spikes/macos-accessibility/ax-text-region-probe.swift --prompt-permission --focused-only --max-chars=500
+   ```
+
+2. Open `System Settings > Privacy & Security > Accessibility`.
+3. Enable the launching terminal app, or the signed probe/app host if the probe
+   is wrapped in one.
+4. Quit and relaunch the terminal or probe host if macOS does not apply the
+   trust change immediately.
+5. Confirm the permission gate:
+
+   ```sh
+   swift spikes/macos-accessibility/ax-text-region-probe.swift --focused-only --max-chars=500
+   ```
+
+6. For each fixture category, focus the target app on prepared monospace text
+   and run the focused probe first. If focused output lacks a usable text
+   element, run a rectangle probe with top-left-origin screen coordinates that
+   point at the fixture text region:
+
+   ```sh
+   swift spikes/macos-accessibility/ax-text-region-probe.swift --rect=x,y,width,height --max-chars=2000
+   ```
+
+Recommended fixture setup:
+
+| Category | Fixture setup | Probe goal |
+|---|---|---|
+| Terminal | Show `Tests/fixtures/rectangular-text/terminal-aligned-output/input.txt` in Terminal.app or iTerm2 with wrapping disabled. | Capture focused or hit-tested text role, visible range, string-for-range support, bounds-for-range support, and line mapping if available. |
+| Native editor | Open `Tests/fixtures/rectangular-text/editor-fixed-width-table/input.txt` in TextEdit plain-text mode or another native editor with a monospace font and wrapping disabled. | Confirm whether the editor exposes range text and range bounds for visible lines. |
+| Browser plain text | Open `Tests/fixtures/rectangular-text/browser-plain-text-area/fixture.html` in Safari or Chrome, click the textarea, keep zoom at 100 percent. | Compare textarea and optional `<pre>` capability; record browser-specific partial support separately. |
+| Log viewer-like pane | Show `Tests/fixtures/rectangular-text/log-viewer-syslog/input.log` in `less` or another monospace log viewer with wrapping disabled. | Confirm visible log rows expose range geometry and line mapping. |
+
+Record each run with this minimum evidence:
+
+| Field | Required value |
+|---|---|
+| Date and macOS version | Date, macOS build/version, and target app version. |
+| Probe command | Exact focused or `--rect=` command. |
+| Accessibility trusted | `true`; if `false`, classify as `blocked`. |
+| Target app and fixture | App name/version and fixture path. |
+| Capability result | `supported`, `partial`, `unsupported`, or `blocked`. |
+| Required AX capabilities | Whether range text, visible/full range, bounds for range, and line mapping or fallback geometry were present. |
+| Output evidence | Redacted probe output that does not include sensitive user text. |
 
 ## Probe
 
