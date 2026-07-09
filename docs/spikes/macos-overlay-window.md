@@ -353,9 +353,29 @@ Run the interactive prototype from a GUI session:
 swift spikes/macos-overlay/overlay-rectangle-prototype.swift
 ```
 
+Useful validation variants:
+
+```sh
+swift spikes/macos-overlay/overlay-rectangle-prototype.swift --help
+swift spikes/macos-overlay/overlay-rectangle-prototype.swift --diagnostics
+swift spikes/macos-overlay/overlay-rectangle-prototype.swift --level=floating --diagnostics
+swift spikes/macos-overlay/overlay-rectangle-prototype.swift --auto-cancel-after=1
+```
+
+Prototype options:
+
+| Option | Purpose |
+|---|---|
+| `--level=floating\|statusBar\|screenSaver` | Tests the overlay at a specific AppKit window level. Default is `statusBar`. |
+| `--min-size=<points>` | Changes the minimum width and height required before mouse-up confirms. Default is 4 points. |
+| `--diagnostics` | Prints display IDs, screen frames, visible frames, backing scale factors, and `screensHaveSeparateSpaces`, then exits without showing overlays. |
+| `--auto-cancel-after=<seconds>` | Shows the overlay session and cancels automatically after the given delay. This is useful for a non-interactive smoke test that proves the AppKit session can start and close. |
+
 The prototype keeps anchor/current points in overlay view coordinates, converts
 the normalized rectangle through view -> window -> screen, makes the panel key
-for `keyDown`, and installs a local key monitor fallback for Escape.
+for `keyDown`, and installs a local key monitor fallback for Escape. It clamps
+drag points to the starting screen's overlay view bounds so the MVP behavior
+stays single-display even if the pointer crosses a display boundary.
 
 Manual validation should cover:
 
@@ -369,6 +389,53 @@ Manual validation should cover:
 | Retina display | Rect size and drawn border remain stable in points; no manual pixel scaling is needed. |
 | Full-screen app | `.statusBar` plus collection behavior is tested; fallback level is documented if needed. |
 | App focus | Underlying app should remain the user's apparent context; GridSelect should not become visibly activated. |
+
+## Prototype validation status
+
+Validation date: 2026-07-09 JST
+
+Automated and non-interactive checks completed in a normal macOS GUI session:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Typecheck | Passed | `swiftc -typecheck spikes/macos-overlay/overlay-rectangle-prototype.swift` |
+| Help path | Passed | `swift spikes/macos-overlay/overlay-rectangle-prototype.swift --help` printed usage and exited. |
+| Diagnostics path | Passed | `swift spikes/macos-overlay/overlay-rectangle-prototype.swift --diagnostics --level=statusBar` printed two screens and exited. |
+| Overlay session smoke | Passed | `swift spikes/macos-overlay/overlay-rectangle-prototype.swift --auto-cancel-after=1` started the AppKit overlay session, printed screen diagnostics, then cancelled and exited. |
+
+Observed diagnostic environment:
+
+| Screen | Display ID | Frame | Visible frame | Backing scale |
+|---|---:|---|---|---:|
+| 0 | 1 | `(0.0, 0.0, 2560.0, 1080.0)` | `(0.0, 0.0, 2560.0, 1050.0)` | 2.0 |
+| 1 | 3 | `(2560.0, 78.0, 1920.0, 1080.0)` | `(2560.0, 78.0, 1920.0, 1050.0)` | 1.0 |
+
+`NSScreen.screensHaveSeparateSpaces` reported `true` after initializing
+`NSApplication.shared`. The prototype now initializes AppKit before diagnostics
+so diagnostics and an actual overlay run observe the same screen environment.
+
+Manual interaction results:
+
+| Scenario | Status | Notes |
+|---|---|---|
+| Visual confirmation that overlays appear over Terminal/editor/browser | Blocked for this agent run | The background Codex thread can start and auto-cancel the AppKit session, but it cannot honestly verify screen pixels or human-visible stacking. |
+| Drag update | Blocked for this agent run | Requires human mouse interaction over the overlay. |
+| Escape cancel | Blocked for this agent run | The code path is present through `keyDown` and a local key monitor, but it needs interactive validation. |
+| Mouse-up confirm and printed rectangle | Blocked for this agent run | Requires human drag interaction; expected output is `selection screenID=... x=... y=... w=... h=...`. |
+| Full-screen Space behavior | Blocked for this agent run | Requires a human to place a target app in full-screen mode and test `.statusBar`, then `.screenSaver` only if needed. |
+
+The automated smoke test proves the prototype can create overlay panels and
+cleanly close the session in this environment. It does not replace manual
+validation of rectangle drawing, pointer interaction, or window stacking.
+
+## Acceptance criteria mapping
+
+| Issue #7 criterion | Current evidence | Remaining work |
+|---|---|---|
+| A prototype can display and update a rectangle over another app. | The AppKit prototype typechecks and the auto-cancel smoke run starts/closes an overlay session. Drawing and drag-update code paths exist. | Human manual validation must confirm visible stacking and drag updates over Terminal/editor/browser. |
+| The report documents window level, input handling, and focus behavior. | The report covers `.floating`, `.statusBar`, `.screenSaver`, non-activating panels, local mouse/key handling, and focus tradeoffs. | Record exact manual results for the chosen macOS version after interaction testing. |
+| Basic multi-display and Retina coordinate considerations are documented. | The report documents point-based storage, one panel per screen, single-display clamping, and diagnostics from one Retina and one non-Retina display. | Human validation should confirm drag behavior on each physical display and across the boundary. |
+| Known permission requirements and limitations are listed. | The report states overlay-only behavior should not require Screen Recording, Accessibility, or Input Monitoring, and lists when those permissions would apply later. | Reconfirm during manual validation that no unexpected TCC prompt appears. |
 
 ## Risks and follow-ups
 
