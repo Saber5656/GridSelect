@@ -66,6 +66,10 @@ clipboard without changing the source application.
 - Optional app-specific improvements after the core model works.
 - Structured export formats after raw rectangular copy is dependable.
 
+Advanced input sources and integrations are tracked in the
+[deferred scope tracker](deferred-scope-tracker.md). Recording a request there
+does not make it an MVP requirement.
+
 ## Explicit Non-Goals
 
 | Non-goal | Reason |
@@ -77,6 +81,9 @@ clipboard without changing the source application.
 | Automatic table structure inference | MVP copies rectangular text, not semantic tables. |
 | Full native selection replacement | GridSelect complements existing selection behavior. |
 | Word, Excel, Slack, or Notion optimization | App-specific behavior is deferred until the core workflow is proven. |
+
+Use the [deferred scope tracker](deferred-scope-tracker.md) to record examples
+or requests for these non-goals without expanding the MVP boundary.
 
 ## Verification
 
