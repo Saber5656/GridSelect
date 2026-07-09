@@ -4,9 +4,10 @@ GridSelect is a pre-alpha macOS utility for copying rectangular regions from
 plain-text, monospace content. It is intended for cases where normal linear text
 selection makes it hard to copy columns, aligned fields, or fixed-width slices.
 
-The project is experimental and does not have an app scaffold, packaged build,
-or supported release yet. Current work is focused on defining the macOS MVP and
-the narrow system-integration path needed to prove the core interaction.
+The project is experimental and has a minimal Swift package scaffold, but no
+packaged build or supported release yet. Current work is focused on proving the
+macOS MVP and the narrow system-integration path needed for the core
+interaction.
 
 ## MVP Scope
 
@@ -44,7 +45,7 @@ first release. These areas are intentionally outside the MVP:
 |---|---|
 | Product requirements | Drafted for the macOS-first MVP. |
 | Architecture | Proposed native macOS architecture using Swift, SwiftUI, AppKit, and Accessibility APIs. |
-| Implementation | Not scaffolded yet. |
+| Implementation | Minimal Swift package scaffold exists; core system integrations are not implemented yet. |
 | Releases | No supported release or package is available. |
 | Contributions | Welcome through focused issues and pull requests that fit the MVP boundary. |
 
@@ -52,6 +53,7 @@ first release. These areas are intentionally outside the MVP:
 
 - [Product requirements and MVP boundary](docs/product-requirements.md)
 - [ADR 0001: Native macOS architecture for the MVP](docs/adr/0001-macos-native-mvp-architecture.md)
+- [Issue parallel execution plan](docs/issue-parallel-execution-plan.md)
 - [Repository hardening audit](docs/repository-hardening-audit.md)
 
 ## Contributing
