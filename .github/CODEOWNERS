@@ -1,0 +1,31 @@
+# Maintainer-owned repository and automation surfaces.
+/.github/CODEOWNERS @Saber5656
+/.github/pull_request_template.md @Saber5656
+/.github/ISSUE_TEMPLATE/** @Saber5656
+/.github/dependabot.yml @Saber5656
+/.github/workflows/** @Saber5656
+
+# Package manifests and lockfiles.
+/Package.swift @Saber5656
+/Package.resolved @Saber5656
+/package.json @Saber5656
+/package-lock.json @Saber5656
+/pnpm-lock.yaml @Saber5656
+/yarn.lock @Saber5656
+/bun.lock @Saber5656
+/bun.lockb @Saber5656
+/Cargo.toml @Saber5656
+/Cargo.lock @Saber5656
+/go.mod @Saber5656
+/go.sum @Saber5656
+/pyproject.toml @Saber5656
+/uv.lock @Saber5656
+/requirements*.txt @Saber5656
+/Gemfile @Saber5656
+/Gemfile.lock @Saber5656
+
+# Release and publishing surfaces.
+/CHANGELOG.md @Saber5656
+/RELEASE.md @Saber5656
+/docs/release/** @Saber5656
+/.github/release.yml @Saber5656
