@@ -1,0 +1,6 @@
+$ ps -o pid,tty,time,command
+  PID TTY           TIME COMMAND
+ 1041 ttys000    0:00.28 zsh
+ 1188 ttys000    0:01.52 swift build
+ 1302 ttys001    0:00.09 vim README.md
+ 1433 ttys002    0:02.31 tail -f app.log

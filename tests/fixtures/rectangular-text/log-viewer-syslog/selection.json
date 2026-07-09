@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "log-viewer-syslog",
+  "category": "log-viewer",
+  "description": "Log level, service, and event columns from fixed-width log rows.",
+  "input": "input.log",
+  "expectedPlainTextOutput": "expected.txt",
+  "selection": {
+    "indexing": "zero-based half-open ranges over visible monospace text",
+    "rows": {
+      "start": 1,
+      "end": 5
+    },
+    "columns": {
+      "start": 20,
+      "end": 42
+    }
+  },
+  "manualTargets": [
+    "Terminal.app with less",
+    "Console.app capability observation",
+    "native log viewer"
+  ],
+  "notes": [
+    "Use the Terminal.app less path for deterministic reproduction.",
+    "Record native log viewers as supported, partial, unsupported, or blocked based on AX range geometry."
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "editor-fixed-width-table",
+  "category": "editor",
+  "description": "Q2 and Q3 columns from a fixed-width table.",
+  "input": "input.txt",
+  "expectedPlainTextOutput": "expected.txt",
+  "selection": {
+    "indexing": "zero-based half-open ranges over visible monospace text",
+    "rows": {
+      "start": 0,
+      "end": 5
+    },
+    "columns": {
+      "start": 17,
+      "end": 24
+    }
+  },
+  "manualTargets": [
+    "TextEdit plain-text mode",
+    "CotEditor",
+    "BBEdit",
+    "VS Code",
+    "Cursor"
+  ],
+  "notes": [
+    "Use a monospace font and disable soft wrapping.",
+    "Electron/custom editors may expose partial AX metadata."
+  ]
+}
