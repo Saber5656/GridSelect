@@ -46,7 +46,7 @@ first release. These areas are intentionally outside the MVP:
 | Product requirements | Drafted for the macOS-first MVP. |
 | Architecture | Proposed native macOS architecture using Swift, SwiftUI, AppKit, and Accessibility APIs. |
 | Implementation | Minimal Swift package scaffold exists; core system integrations are not implemented yet. |
-| Releases | No supported release or package is available. |
+| Releases | No supported release or package is available; see the pre-alpha release checklist before tagging or packaging. |
 | Contributions | Welcome through focused issues and pull requests that fit the MVP boundary. |
 
 ## Documentation
@@ -54,6 +54,7 @@ first release. These areas are intentionally outside the MVP:
 - [Product requirements and MVP boundary](docs/product-requirements.md)
 - [ADR 0001: Native macOS architecture for the MVP](docs/adr/0001-macos-native-mvp-architecture.md)
 - [Issue parallel execution plan](docs/issue-parallel-execution-plan.md)
+- [Pre-alpha release checklist](docs/pre-alpha-release-checklist.md)
 - [Repository hardening audit](docs/repository-hardening-audit.md)
 
 ## Contributing
