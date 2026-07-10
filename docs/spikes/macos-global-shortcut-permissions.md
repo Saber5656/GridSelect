@@ -219,7 +219,10 @@ Steps:
 
 ## On-Device Validation Plan
 
-This document is desk research. Issue #8's acceptance criteria include a working prototype ("A prototype can trigger a visible action from a global shortcut"), which remains open. The prototype must confirm:
+The original recommendation was desk research. Issue #8's acceptance criteria
+also include a working prototype ("A prototype can trigger a visible action from
+a global shortcut"), and the prototype/manual validation path below must
+confirm:
 
 | Check | Expected result |
 |---|---|
@@ -232,9 +235,73 @@ This document is desk research. Issue #8's acceptance criteria include a working
 | Revoke Accessibility | Shortcut opens the setup panel instead of starting extraction |
 | Fallback build (CGEventTap), if exercised | Input Monitoring grant/revoke cycle starts/stops the tap per the fallback plan |
 
+## Prototype
+
+Issue #8 now includes a minimal Carbon hot-key prototype at
+`spikes/macos-shortcut/hotkey-prototype.swift`.
+
+The prototype intentionally avoids third-party shortcut wrappers so the MVP can
+validate the raw permission surface first. It uses `RegisterEventHotKey` for the
+default `Command-Shift-G` shortcut, installs a Carbon hot-key event handler, and
+updates a menu-bar status item when the shortcut fires. It also beeps and prints
+an activation line to stdout so the visible action has both UI and terminal
+evidence.
+
+Run the prototype in an interactive macOS GUI session:
+
+```sh
+swift spikes/macos-shortcut/hotkey-prototype.swift
+```
+
+Expected behavior:
+
+1. A `GridSelect HotKey` status item appears in the menu bar.
+2. Pressing `Command-Shift-G` changes the menu-bar title to `GridSelect 1`,
+   `GridSelect 2`, and so on.
+3. The terminal prints a timestamped `Triggered N` line.
+4. No Accessibility or Input Monitoring prompt appears for shortcut detection.
+5. Choose `Quit` from the status-item menu to exit.
+
+The prototype also has a non-interactive smoke test that registers and
+unregisters the same hot key without entering the AppKit run loop:
+
+```sh
+swiftc spikes/macos-shortcut/hotkey-prototype.swift -o /tmp/gridselect-hotkey-prototype
+/tmp/gridselect-hotkey-prototype --smoke-test
+```
+
+This does not prove the visible action path, but it proves the current host can
+call `RegisterEventHotKey` for the default shortcut and receive `noErr`.
+
+## Prototype Validation Status
+
+| Check | Result | Evidence |
+|---|---|---|
+| Prototype compile | Passed | `swiftc spikes/macos-shortcut/hotkey-prototype.swift -o /tmp/gridselect-hotkey-prototype` |
+| Help output | Passed | `swift spikes/macos-shortcut/hotkey-prototype.swift --help` |
+| Register/unregister smoke test | Passed | `/tmp/gridselect-hotkey-prototype --smoke-test` printed `smoke-test: registered and unregistered Command-Shift-G` |
+| Visible menu-bar action | Not run in automated CLI | Requires an interactive macOS GUI session and manual `Command-Shift-G` input while the prototype keeps running. |
+| TCC prompt observation | Not run in automated CLI | Confirm during the same manual GUI run that shortcut detection does not request Accessibility or Input Monitoring. |
+
+Manual validation should copy this table into the task record or issue comment:
+
+| Field | Value |
+|---|---|
+| Date |  |
+| macOS version |  |
+| Prototype command | `swift spikes/macos-shortcut/hotkey-prototype.swift` |
+| Default shortcut | `Command-Shift-G` |
+| Status item appeared |  |
+| Menu-bar title changed after shortcut |  |
+| Stdout printed activation line |  |
+| Accessibility prompt appeared |  |
+| Input Monitoring prompt appeared |  |
+| Registration failure OSStatus, if any |  |
+| Notes |  |
+
 ## Open Follow-Ups
 
-- Build the shortcut prototype required by issue #8's acceptance criteria, covering the no-TCC and Sequoia-restriction checks above.
+- Run the shortcut prototype in an interactive GUI session and record visible-action evidence, no-TCC behavior, conflicts, and Sequoia-restriction checks.
 - #6 must validate whether the Accessibility text-extraction path is compatible with App Sandbox and Mac App Store expectations.
 - #7 must validate overlay behavior in the same distribution modes.
 - #16 should own the eventual minimal settings/setup UI, including the change-shortcut affordance for registration failures.
