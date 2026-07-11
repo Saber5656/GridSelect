@@ -267,10 +267,10 @@ Recommended fixture setup:
 
 | Category | Fixture setup | Probe goal |
 |---|---|---|
-| Terminal | Show `Tests/fixtures/rectangular-text/terminal-aligned-output/input.txt` in Terminal.app or iTerm2 with wrapping disabled. | Capture focused or hit-tested text role, visible range, string-for-range support, bounds-for-range support, and line mapping if available. |
-| Native editor | Open `Tests/fixtures/rectangular-text/editor-fixed-width-table/input.txt` in TextEdit plain-text mode or another native editor with a monospace font and wrapping disabled. | Confirm whether the editor exposes range text and range bounds for visible lines. |
-| Browser plain text | Open `Tests/fixtures/rectangular-text/browser-plain-text-area/fixture.html` in Safari or Chrome, click the textarea, keep zoom at 100 percent. | Compare textarea and optional `<pre>` capability; record browser-specific partial support separately. |
-| Log viewer-like pane | Show `Tests/fixtures/rectangular-text/log-viewer-syslog/input.log` in `less` or another monospace log viewer with wrapping disabled. | Confirm visible log rows expose range geometry and line mapping. |
+| Terminal | Show `tests/fixtures/rectangular-text/terminal-aligned-output/input.txt` in Terminal.app or iTerm2 with wrapping disabled. | Capture focused or hit-tested text role, visible range, string-for-range support, bounds-for-range support, and line mapping if available. |
+| Native editor | Open `tests/fixtures/rectangular-text/editor-fixed-width-table/input.txt` in TextEdit plain-text mode or another native editor with a monospace font and wrapping disabled. | Confirm whether the editor exposes range text and range bounds for visible lines. |
+| Browser plain text | Open `tests/fixtures/rectangular-text/browser-plain-text-area/fixture.html` in Safari or Chrome, click the textarea, keep zoom at 100 percent. | Compare textarea and optional `<pre>` capability; record browser-specific partial support separately. |
+| Log viewer-like pane | Show `tests/fixtures/rectangular-text/log-viewer-syslog/input.log` in `less` or another monospace log viewer with wrapping disabled. | Confirm visible log rows expose range geometry and line mapping. |
 
 Record each run with this minimum evidence:
 
