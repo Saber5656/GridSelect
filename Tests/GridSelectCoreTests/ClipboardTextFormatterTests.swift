@@ -77,11 +77,12 @@ final class ClipboardTextFormatterTests: XCTestCase {
         XCTAssertEqual(formatter.format(rows: rows, rows: 0..<1, columns: 2..<2), .noOutput)
         XCTAssertEqual(formatter.format(rows: rows, rows: 4..<6, columns: 0..<2), .noOutput)
         XCTAssertEqual(formatter.format(rows: [], rows: 0..<1, columns: 0..<2), .noOutput)
+        XCTAssertEqual(formatter.format(text: "", rows: 0..<1, columns: 0..<2), .noOutput)
     }
 
-    func testPadsEmptyLogicalLinesInsideSelection() {
+    func testPadsExplicitEmptyLogicalRowsInsideSelection() {
         let result = formatter.format(
-            text: "",
+            rows: [""],
             rows: 0..<1,
             columns: 0..<2
         )

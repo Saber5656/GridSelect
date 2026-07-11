@@ -8,7 +8,12 @@ public struct ClipboardTextFormatter: Equatable, Sendable {
         rows rowRange: Range<Int>,
         columns columnRange: Range<Int>
     ) -> ClipboardTextFormattingResult {
-        format(
+        // Use the rows overload to represent a selected row that is intentionally empty.
+        guard !text.isEmpty else {
+            return .noOutput
+        }
+
+        return format(
             rows: Self.logicalRows(from: text),
             rows: rowRange,
             columns: columnRange
