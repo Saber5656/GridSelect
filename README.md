@@ -39,6 +39,10 @@ first release. These areas are intentionally outside the MVP:
 - App-specific optimizations for Word, Excel, Slack, Notion, or similar apps.
 - Windows or Linux support before the macOS MVP is proven.
 
+Requests in these areas should be captured in the
+[deferred scope tracker](docs/deferred-scope-tracker.md) instead of becoming MVP
+requirements.
+
 ## Project Status
 
 | Area | Status |
@@ -53,6 +57,7 @@ first release. These areas are intentionally outside the MVP:
 
 - [Product requirements and MVP boundary](docs/product-requirements.md)
 - [ADR 0001: Native macOS architecture for the MVP](docs/adr/0001-macos-native-mvp-architecture.md)
+- [Deferred scope tracker](docs/deferred-scope-tracker.md)
 - [Issue parallel execution plan](docs/issue-parallel-execution-plan.md)
 - [Repository hardening audit](docs/repository-hardening-audit.md)
 
