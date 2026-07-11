@@ -33,9 +33,23 @@ func usage() {
         Graphics space), as consumed by AXUIElementCopyElementAtPosition.
       - Probe output can include arbitrary text exposed by other apps,
         including secrets. Run it only against prepared fixtures.
+      - When Accessibility is not trusted, the probe prints host identity
+        hints to help identify the app/process to grant permission to.
       - The probe reports capabilities and small samples only.
       - It does not capture screenshots or mutate native selections.
     """)
+}
+
+func printPermissionHostHints() {
+    print("permissionHostProcessName: \(ProcessInfo.processInfo.processName)")
+    if let bundleIdentifier = Bundle.main.bundleIdentifier {
+        print("permissionHostBundleIdentifier: \(bundleIdentifier)")
+    } else {
+        print("permissionHostBundleIdentifier: <none>")
+    }
+    let launchedAs = CommandLine.arguments.first ?? "<unknown>"
+    print("permissionHostLaunchPath: \(launchedAs)")
+    print("permissionHostGrantHint: grant Accessibility to the launching terminal app, or to a signed probe/app host if this script is wrapped in one.")
 }
 
 func parseOptions() -> Options {
@@ -410,6 +424,7 @@ func main() {
     let trusted = AXIsProcessTrustedWithOptions(trustedOptions)
     print("accessibilityTrusted: \(trusted)")
     guard trusted else {
+        printPermissionHostHints()
         print("Grant Accessibility permission, then run again.")
         Foundation.exit(2)
     }
