@@ -21,6 +21,26 @@ final class RectangularTextFixtureTests: XCTestCase {
         XCTAssertTrue(isDirectory.boolValue)
     }
 
+    func testFixtureRootTraversalStopsAtFilesystemRoot() {
+        let fixtureRoot = RectangularTextFixtureLoader.resolveFixtureRoot(
+            startingAt: [URL(fileURLWithPath: "/", isDirectory: true)]
+        )
+
+        XCTAssertNil(fixtureRoot)
+    }
+
+    func testFixtureRootResolutionFallsBackToLaterCandidate() throws {
+        let expectedRoot = try RectangularTextFixtureLoader.resolveDefaultFixtureRoot()
+        let fixtureRoot = RectangularTextFixtureLoader.resolveFixtureRoot(
+            startingAt: [
+                URL(fileURLWithPath: "/", isDirectory: true),
+                expectedRoot,
+            ]
+        )
+
+        XCTAssertEqual(fixtureRoot?.standardizedFileURL, expectedRoot.standardizedFileURL)
+    }
+
     func testDiscoversValidFixturesWithoutPerFixtureRegistration() throws {
         let fixtures = try RectangularTextFixtureLoader.loadAll()
 

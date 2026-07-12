@@ -87,25 +87,37 @@ enum RectangularTextFixtureLoader {
     }
 
     static func resolveDefaultFixtureRoot() throws -> URL {
-        var startingURLs = [Bundle.main.bundleURL]
+        var startingURLs: [URL] = []
+
+        let sourcePath = #filePath
+        if sourcePath.hasPrefix("/") {
+            startingURLs.append(
+                URL(fileURLWithPath: sourcePath).deletingLastPathComponent()
+            )
+        }
+
+        startingURLs.append(Bundle.main.bundleURL)
         if let executableURL = Bundle.main.executableURL {
             startingURLs.append(executableURL.deletingLastPathComponent())
         }
 
-        let sourceURL = URL(fileURLWithPath: #filePath)
-        if sourceURL.path.hasPrefix("/") {
-            startingURLs.append(sourceURL.deletingLastPathComponent())
+        if let root = resolveFixtureRoot(startingAt: startingURLs) {
+            return root
         }
 
+        throw LoadingError(
+            "Could not locate tests/fixtures/rectangular-text from the test source or executable"
+        )
+    }
+
+    static func resolveFixtureRoot(startingAt startingURLs: [URL]) -> URL? {
         for startingURL in startingURLs {
             if let root = fixtureRoot(above: startingURL) {
                 return root
             }
         }
 
-        throw LoadingError(
-            "Could not locate tests/fixtures/rectangular-text from the test source or executable"
-        )
+        return nil
     }
 
     private static func fixtureRoot(above startingURL: URL) -> URL? {
@@ -124,8 +136,14 @@ enum RectangularTextFixtureLoader {
                 return fixtureRoot
             }
 
-            let parentURL = currentURL.deletingLastPathComponent()
-            guard parentURL.path != currentURL.path else {
+            guard currentURL.pathComponents.count > 1 else {
+                return nil
+            }
+
+            let parentURL = currentURL
+                .deletingLastPathComponent()
+                .standardizedFileURL
+            guard parentURL.pathComponents.count < currentURL.pathComponents.count else {
                 return nil
             }
             currentURL = parentURL
