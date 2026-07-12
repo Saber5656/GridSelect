@@ -419,6 +419,15 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         XCTAssertTrue(clipboard.writtenTexts.isEmpty)
     }
 
+    func testControlledExtractorConsumesResultCompletedBeforeStart() async throws {
+        let extractor = ControlledExtractorStub()
+
+        await extractor.succeed(with: "latched result")
+        let result = try await extractor.extractText(in: rectangle)
+
+        XCTAssertEqual(result, "latched result")
+    }
+
     func testReentryIsIgnoredAndCancellationCleansActiveOverlay() async {
         let overlay = SuspendingOverlayStub()
         let coordinator = makeCoordinator(
@@ -432,7 +441,12 @@ final class SelectionModeCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(coordinator.activate())
         XCTAssertFalse(coordinator.activate())
-        await overlay.waitUntilSelectionCount(1)
+        guard await overlay.waitUntilSelectionCount(1) else {
+            XCTFail("Timed out waiting for the selection overlay to start")
+            coordinator.shutdown()
+            await coordinator.waitForAllSessionCleanup()
+            return
+        }
 
         XCTAssertTrue(coordinator.cancel())
         await coordinator.waitForMostRecentSession()
@@ -457,7 +471,13 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         )
 
         XCTAssertTrue(coordinator.activate())
-        await extractor.waitUntilStarted()
+        guard await extractor.waitUntilStarted() else {
+            XCTFail("Timed out waiting for text extraction to start")
+            coordinator.cancel()
+            await extractor.succeed(with: "cleanup")
+            await coordinator.waitForAllSessionCleanup()
+            return
+        }
         XCTAssertEqual(coordinator.state, .extracting(rectangle))
 
         XCTAssertTrue(coordinator.cancel())
@@ -489,7 +509,13 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         )
 
         XCTAssertTrue(coordinator.activate())
-        await extractor.waitUntilStarted()
+        guard await extractor.waitUntilStarted() else {
+            XCTFail("Timed out waiting for text extraction to start")
+            coordinator.cancel()
+            await extractor.succeed(with: "cleanup")
+            await coordinator.waitForAllSessionCleanup()
+            return
+        }
         XCTAssertEqual(coordinator.state, .extracting(rectangle))
 
         overlay.emitDrag(
@@ -520,12 +546,22 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         )
 
         XCTAssertTrue(coordinator.activate())
-        await overlay.waitUntilSelectionCount(1)
+        guard await overlay.waitUntilSelectionCount(1) else {
+            XCTFail("Timed out waiting for the first selection overlay to start")
+            coordinator.shutdown()
+            await coordinator.waitForAllSessionCleanup()
+            return
+        }
         XCTAssertTrue(coordinator.cancel())
         await coordinator.waitForMostRecentSession()
 
         XCTAssertTrue(coordinator.activate())
-        await overlay.waitUntilSelectionCount(2)
+        guard await overlay.waitUntilSelectionCount(2) else {
+            XCTFail("Timed out waiting for the second selection overlay to start")
+            coordinator.shutdown()
+            await coordinator.waitForAllSessionCleanup()
+            return
+        }
         overlay.emitDrag(rectangle, fromSelectionAt: 0)
 
         XCTAssertEqual(coordinator.state, .selecting)
@@ -586,7 +622,12 @@ final class SelectionModeCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(coordinator.installShortcut())
         XCTAssertTrue(coordinator.activate())
-        await overlay.waitUntilSelectionCount(1)
+        guard await overlay.waitUntilSelectionCount(1) else {
+            XCTFail("Timed out waiting for the selection overlay to start")
+            coordinator.shutdown()
+            await coordinator.waitForAllSessionCleanup()
+            return
+        }
 
         coordinator.shutdown()
         await coordinator.waitForMostRecentSession()
@@ -750,7 +791,7 @@ private final class ImmediateOverlayStub: SelectionOverlayPresenting {
 private final class SuspendingOverlayStub: SelectionOverlayPresenting {
     private struct SelectionWaiter {
         let expectedCount: Int
-        let continuation: CheckedContinuation<Void, Never>
+        let expectation: XCTestExpectation
     }
 
     private var continuation: CheckedContinuation<SelectionOverlayResult, any Error>?
@@ -782,26 +823,37 @@ private final class SuspendingOverlayStub: SelectionOverlayPresenting {
         dragHandlers[index](rectangle)
     }
 
-    func waitUntilSelectionCount(_ expectedCount: Int) async {
+    func waitUntilSelectionCount(
+        _ expectedCount: Int,
+        timeout: TimeInterval = 2.0
+    ) async -> Bool {
         guard selectionCount < expectedCount else {
-            return
+            return true
         }
 
-        await withCheckedContinuation { continuation in
-            selectionWaiters.append(
-                SelectionWaiter(
-                    expectedCount: expectedCount,
-                    continuation: continuation
-                )
+        let expectation = XCTestExpectation(
+            description: "Selection count reaches \(expectedCount)"
+        )
+        selectionWaiters.append(
+            SelectionWaiter(
+                expectedCount: expectedCount,
+                expectation: expectation
             )
-        }
+        )
+
+        let result = await XCTWaiter().fulfillment(
+            of: [expectation],
+            timeout: timeout
+        )
+        selectionWaiters.removeAll { $0.expectation === expectation }
+        return result == .completed
     }
 
     private func resumeSelectionWaiters() {
         var pending: [SelectionWaiter] = []
         for waiter in selectionWaiters {
             if selectionCount >= waiter.expectedCount {
-                waiter.continuation.resume()
+                waiter.expectation.fulfill()
             } else {
                 pending.append(waiter)
             }
@@ -846,15 +898,23 @@ private actor ExtractorStub: RectangularTextExtracting {
 }
 
 private actor ControlledExtractorStub: RectangularTextExtracting {
-    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var startedExpectations: [XCTestExpectation] = []
     private var continuation: CheckedContinuation<String, any Error>?
+    private var pendingResult: String?
     private(set) var hasStarted = false
     private(set) var hasReturned = false
 
     func extractText(in rectangle: SelectionRectangle) async throws -> String {
         hasStarted = true
-        startedWaiters.forEach { $0.resume() }
-        startedWaiters.removeAll()
+        startedExpectations.forEach { $0.fulfill() }
+        startedExpectations.removeAll()
+
+        if let pendingResult {
+            self.pendingResult = nil
+            hasReturned = true
+            return pendingResult
+        }
+
         let text = try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
         }
@@ -863,17 +923,31 @@ private actor ControlledExtractorStub: RectangularTextExtracting {
     }
 
     func succeed(with text: String) {
-        continuation?.resume(returning: text)
-        continuation = nil
-    }
-
-    func waitUntilStarted() async {
-        guard !hasStarted else {
+        guard let continuation else {
+            pendingResult = text
             return
         }
-        await withCheckedContinuation { continuation in
-            startedWaiters.append(continuation)
+
+        self.continuation = nil
+        continuation.resume(returning: text)
+    }
+
+    func waitUntilStarted(timeout: TimeInterval = 2.0) async -> Bool {
+        guard !hasStarted else {
+            return true
         }
+
+        let expectation = XCTestExpectation(
+            description: "Text extraction starts"
+        )
+        startedExpectations.append(expectation)
+
+        let result = await XCTWaiter().fulfillment(
+            of: [expectation],
+            timeout: timeout
+        )
+        startedExpectations.removeAll { $0 === expectation }
+        return result == .completed
     }
 }
 
