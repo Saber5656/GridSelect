@@ -119,6 +119,9 @@ public final class SelectionModeCoordinator {
                 self?.handleShortcutActivation(generation: registrationGeneration)
             }
             isShortcutInstalled = true
+            if state == .failed(.shortcutRegistrationFailed) {
+                transition(to: .idle)
+            }
             return true
         } catch {
             transition(to: .failed(.shortcutRegistrationFailed))

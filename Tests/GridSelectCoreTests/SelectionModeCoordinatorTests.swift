@@ -536,23 +536,40 @@ final class SelectionModeCoordinatorTests: XCTestCase {
     func testShortcutRegistrationFailureIsTypedAndRetryable() async {
         let shortcut = ShortcutStub()
         shortcut.shouldFailRegistration = true
+        let states = StateRecorder()
         let coordinator = makeCoordinator(
             shortcut: shortcut,
             permission: PermissionStub(status: .granted),
             overlay: ImmediateOverlayStub(result: .cancelled),
             extractor: ExtractorStub(behavior: .succeed("unused")),
             clipboard: ClipboardStub(),
-            states: StateRecorder()
+            states: states
         )
 
         XCTAssertFalse(coordinator.installShortcut())
         XCTAssertEqual(coordinator.state, .failed(.shortcutRegistrationFailed))
+        XCTAssertEqual(states.values, [.failed(.shortcutRegistrationFailed)])
 
         shortcut.shouldFailRegistration = false
         XCTAssertTrue(coordinator.installShortcut())
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(
+            states.values,
+            [.failed(.shortcutRegistrationFailed), .idle]
+        )
+
         XCTAssertTrue(shortcut.trigger())
         await coordinator.waitForMostRecentSession()
         XCTAssertEqual(coordinator.state, .cancelled)
+        XCTAssertEqual(
+            states.values,
+            [
+                .failed(.shortcutRegistrationFailed),
+                .idle,
+                .selecting,
+                .cancelled
+            ]
+        )
     }
 
     func testShutdownCancelsSessionAndUnregistersShortcut() async {
