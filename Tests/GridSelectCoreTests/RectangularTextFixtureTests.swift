@@ -67,8 +67,8 @@ final class RectangularTextFixtureTests: XCTestCase {
 
             for row in expectedRows {
                 XCTAssertTrue(
-                    row.utf8.allSatisfy { $0 < 0x80 },
-                    "Fixture \(fixture.id) must stay within the ASCII monospace MVP"
+                    row.utf8.allSatisfy(isPrintableASCIIMonospaceByte),
+                    "Fixture \(fixture.id) must use printable ASCII monospace bytes"
                 )
                 XCTAssertEqual(
                     row.utf8.count,
@@ -76,6 +76,16 @@ final class RectangularTextFixtureTests: XCTestCase {
                     "Fixture \(fixture.id) does not preserve its rectangular width"
                 )
             }
+        }
+    }
+
+    func testPrintableASCIIMonospaceByteValidationRejectsUnsupportedContent() {
+        for text in [" ", "~", "printable"] {
+            XCTAssertTrue(text.utf8.allSatisfy(isPrintableASCIIMonospaceByte))
+        }
+
+        for text in ["\t", "\n", "\u{001F}", "\u{007F}", "é"] {
+            XCTAssertFalse(text.utf8.allSatisfy(isPrintableASCIIMonospaceByte))
         }
     }
 
@@ -110,4 +120,8 @@ final class RectangularTextFixtureTests: XCTestCase {
             XCTAssertEqual(result, fixture.expectedPlainTextOutput, "Fixture \(fixture.id)")
         }
     }
+}
+
+private func isPrintableASCIIMonospaceByte(_ byte: UInt8) -> Bool {
+    byte >= 0x20 && byte <= 0x7E
 }
