@@ -36,7 +36,10 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
     }
 
     public var isReady: Bool {
-        permissionStatus == .granted && shortcutStatus.isActive
+        permissionStatus == .granted
+            && shortcutStatus.isActive
+            && !selectionState.isActive
+            && selectionState != .permissionRequired
     }
 
     public var statusTitle: String {
@@ -121,10 +124,20 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
         shortcutStatus: ShortcutReadiness? = nil,
         selectionState: SelectionModeState? = nil
     ) -> Self {
-        Self(
-            permissionStatus: permissionStatus ?? self.permissionStatus,
+        let updatedPermissionStatus = permissionStatus ?? self.permissionStatus
+        let updatedSelectionState: SelectionModeState
+        if permissionStatus == .granted,
+           selectionState == nil,
+           self.selectionState == .permissionRequired {
+            updatedSelectionState = .idle
+        } else {
+            updatedSelectionState = selectionState ?? self.selectionState
+        }
+
+        return Self(
+            permissionStatus: updatedPermissionStatus,
             shortcutStatus: shortcutStatus ?? self.shortcutStatus,
-            selectionState: selectionState ?? self.selectionState
+            selectionState: updatedSelectionState
         )
     }
 

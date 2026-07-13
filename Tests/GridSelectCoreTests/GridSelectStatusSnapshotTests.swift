@@ -32,6 +32,33 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
         )
     }
 
+    func testActiveSelectionStatesAreNotReadyForAnotherActivation() {
+        let rectangle = SelectionRectangle(
+            displayID: 1,
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40
+        )
+        let activeStates: [SelectionModeState] = [
+            .selecting,
+            .dragging(rectangle),
+            .confirmed(rectangle),
+            .extracting(rectangle),
+            .copying,
+        ]
+
+        for selectionState in activeStates {
+            let snapshot = GridSelectStatusSnapshot(
+                permissionStatus: .granted,
+                shortcutStatus: .active(displayName: "⌘⇧G"),
+                selectionState: selectionState
+            )
+
+            XCTAssertFalse(snapshot.isReady, "Expected \(selectionState) not to be ready")
+        }
+    }
+
     func testInactiveShortcutIsNotPresentedAsReady() {
         let snapshot = GridSelectStatusSnapshot(
             permissionStatus: .granted,
@@ -96,5 +123,37 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
         XCTAssertTrue(shortcutActive.isReady)
         XCTAssertEqual(completed.statusTitle, "Copied to clipboard")
         XCTAssertEqual(completed.statusSymbolName, "checkmark.circle.fill")
+    }
+
+    func testGrantingPermissionClearsStalePermissionRequiredState() {
+        let permissionRequired = GridSelectStatusSnapshot(
+            permissionStatus: .required,
+            shortcutStatus: .active(displayName: "⌘⇧G"),
+            selectionState: .permissionRequired
+        )
+
+        let granted = permissionRequired.updating(permissionStatus: .granted)
+
+        XCTAssertEqual(granted.permissionStatus, .granted)
+        XCTAssertEqual(granted.selectionState, .idle)
+        XCTAssertTrue(granted.isReady)
+        XCTAssertEqual(granted.statusTitle, "Ready to select")
+    }
+
+    func testUnrelatedUpdatePreservesPermissionRequiredState() {
+        let permissionRequired = GridSelectStatusSnapshot(
+            permissionStatus: .granted,
+            shortcutStatus: .inactive(displayName: "⌘⇧G"),
+            selectionState: .permissionRequired
+        )
+
+        let shortcutActive = permissionRequired.updating(
+            shortcutStatus: .active(displayName: "⌘⇧G")
+        )
+
+        XCTAssertEqual(shortcutActive.permissionStatus, .granted)
+        XCTAssertEqual(shortcutActive.selectionState, .permissionRequired)
+        XCTAssertFalse(shortcutActive.isReady)
+        XCTAssertEqual(shortcutActive.statusTitle, "Accessibility required")
     }
 }
