@@ -490,6 +490,9 @@ public final class SelectionModeCoordinator {
 
         do {
             try await extractor.validateCopyAuthorization(for: boundContext)
+        } catch is CancellationError {
+            finish(with: .cancelled, sessionID: sessionID)
+            return
         } catch is SelectionPermissionRequiredError {
             finish(with: .permissionRequired, sessionID: sessionID)
             return
@@ -647,7 +650,9 @@ public final class SelectionModeCoordinator {
         guard let context = activeSourceContext else {
             return
         }
-        shortcut.cancelHandoff(for: context.activation, reason: .setupFailed)
+        if activeHandoffRequired {
+            shortcut.cancelHandoff(for: context.activation, reason: .setupFailed)
+        }
         activeSourceContext = nil
         discardRejectedSourceContext(context)
     }

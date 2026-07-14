@@ -146,6 +146,7 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         let calls = await extractor.calls()
         XCTAssertEqual(calls.unbound, 0)
         XCTAssertEqual(calls.bound, [boundContext])
+        XCTAssertEqual(calls.authorized, [boundContext])
         XCTAssertEqual(calls.discarded, [session])
         XCTAssertEqual(clipboard.writtenTexts, ["bound text"])
         XCTAssertEqual(coordinator.state, .completed)
@@ -313,6 +314,24 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         await coordinator.waitForMostRecentSession()
 
         XCTAssertEqual(coordinator.state, .failed(.extractionFailed))
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+    }
+
+    func testCopyAuthorizationCancellationFinishesAsCancelledWithoutWriting() async {
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: ShortcutStub(),
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(result: .confirmed(rectangle)),
+            extractor: CopyAuthorizationCancellationExtractorStub(),
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+
+        XCTAssertTrue(coordinator.activate())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .cancelled)
         XCTAssertTrue(clipboard.writtenTexts.isEmpty)
     }
 
@@ -987,6 +1006,7 @@ final class SelectionModeCoordinatorTests: XCTestCase {
             overlay.handoffCommands,
             [.move(.right), .freeze, .move(.right)]
         )
+        XCTAssertEqual(shortcut.cancelledActivations, [])
         XCTAssertEqual(coordinator.state, .cancelled)
     }
 
@@ -1437,6 +1457,7 @@ private actor BoundExtractorStub: RectangularTextExtracting {
     private let text: String
     private var unboundCallCount = 0
     private var boundContexts: [BoundSelectionContext] = []
+    private var authorizedContexts: [BoundSelectionContext?] = []
     private var discardedSessions: [SelectionSessionIdentity] = []
 
     init(text: String) {
@@ -1462,14 +1483,29 @@ private actor BoundExtractorStub: RectangularTextExtracting {
 
     func validateCopyAuthorization(
         for boundContext: BoundSelectionContext?
-    ) async throws {}
+    ) async throws {
+        authorizedContexts.append(boundContext)
+    }
 
     func calls() -> (
         unbound: Int,
         bound: [BoundSelectionContext],
+        authorized: [BoundSelectionContext?],
         discarded: [SelectionSessionIdentity]
     ) {
-        (unboundCallCount, boundContexts, discardedSessions)
+        (unboundCallCount, boundContexts, authorizedContexts, discardedSessions)
+    }
+}
+
+private actor CopyAuthorizationCancellationExtractorStub: RectangularTextExtracting {
+    func extractText(in rectangle: SelectionRectangle) async throws -> String {
+        "text"
+    }
+
+    func validateCopyAuthorization(
+        for boundContext: BoundSelectionContext?
+    ) async throws {
+        throw CancellationError()
     }
 }
 
