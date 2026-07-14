@@ -2,7 +2,11 @@ public enum GridOverlayInteractionEffect: Equatable, Sendable {
     case selectionChanged(SelectionRectangle)
     case selectionFrozen(SelectionRectangle)
     case selectAtLeastOneColumn
-    case copyRequested(SelectionRectangle, BoundSelectionContext)
+    case copyRequested(
+        SelectionRectangle,
+        BoundSelectionContext,
+        GridCopyAuthorization
+    )
     case cancelled
 }
 
@@ -176,6 +180,35 @@ public struct GridOverlayInteraction: Equatable, Sendable {
         translate(lifecycle.cancel())
     }
 
+    @discardableResult
+    public mutating func finishCopy(
+        _ authorization: GridCopyAuthorization,
+        succeeded: Bool
+    ) -> Bool {
+        switch lifecycle.finishCopy(authorization, succeeded: succeeded) {
+        case .completed, .failed:
+            return true
+        case .staleResultDiscarded:
+            return false
+        case .selectionChanged, .selectionFrozen, .selectAtLeastOneColumn,
+             .copyStarted, .copyRequestConsumed, .cancelled:
+            return false
+        }
+    }
+
+    @discardableResult
+    public mutating func cancelCopy(
+        _ authorization: GridCopyAuthorization
+    ) -> Bool {
+        guard case let .copying(current) = lifecycle.state,
+              current == authorization,
+              lifecycle.cancel() == .cancelled
+        else {
+            return false
+        }
+        return true
+    }
+
     public mutating func applyHandoffCommands(
         _ commands: [GridHandoffCommand]
     ) -> [GridOverlayInteractionEffect] {
@@ -244,7 +277,7 @@ public struct GridOverlayInteraction: Equatable, Sendable {
             else {
                 return nil
             }
-            return .copyRequested(rectangle, context)
+            return .copyRequested(rectangle, context, authorization)
         case .cancelled:
             return .cancelled
         case .copyRequestConsumed, .staleResultDiscarded, .completed, .failed:

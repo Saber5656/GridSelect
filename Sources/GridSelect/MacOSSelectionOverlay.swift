@@ -42,6 +42,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     private var ownershipLossObserver: NSObjectProtocol?
     private var continuation: CheckedContinuation<SelectionOverlayResult, any Error>?
     private var onDrag: (@MainActor @Sendable (SelectionRectangle) -> Void)?
+    private var onCopyRequested: (@MainActor @Sendable (
+        SelectionCopyRequest
+    ) async -> SelectionCopyResult)?
+    private var copyTask: Task<Void, Never>?
     private var frozenRectangle: SelectionRectangle?
     private var sourceContext: ActivationSourceContext?
     private var gridInteraction: GridOverlayInteraction?
@@ -69,6 +73,38 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult {
+        try await selectSession(
+            sourceContext: sourceContext,
+            onReady: onReady,
+            onDrag: onDrag,
+            onCopyRequested: nil
+        )
+    }
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: @escaping @MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult {
+        try await selectSession(
+            sourceContext: sourceContext,
+            onReady: onReady,
+            onDrag: onDrag,
+            onCopyRequested: onCopyRequested
+        )
+    }
+
+    private func selectSession(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: (@MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult)?
+    ) async throws -> SelectionOverlayResult {
         guard continuation == nil else {
             throw MacOSSelectionOverlayError.alreadySelecting
         }
@@ -81,6 +117,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
                 self.onDrag = onDrag
+                self.onCopyRequested = onCopyRequested
                 self.sourceContext = sourceContext
                 gridInteraction = sourceContext.map(GridOverlayInteraction.init)
                 presentPanels(
@@ -287,7 +324,11 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         guard let frozenRectangle, !frozenRectangle.isEmpty else {
             return
         }
-        finish(with: .confirmed(frozenRectangle))
+        guard onCopyRequested != nil else {
+            finish(with: .confirmed(frozenRectangle))
+            return
+        }
+        beginCopy(.unbound(frozenRectangle))
     }
 
     private func makePanel(
@@ -376,6 +417,13 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             return
         }
 
+        if case .cancelled = result,
+           var interaction = gridInteraction,
+           case let .copying(authorization) = interaction.lifecycle.state
+        {
+            _ = interaction.cancelCopy(authorization)
+            gridInteraction = interaction
+        }
         self.continuation = nil
         sessionGuard.invalidateCurrent()
         cleanup()
@@ -412,6 +460,9 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         }
         panels.removeAll()
         onDrag = nil
+        onCopyRequested = nil
+        copyTask?.cancel()
+        copyTask = nil
         frozenRectangle = nil
         sourceContext = nil
         gridInteraction = nil
@@ -580,8 +631,12 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             onDrag?(rectangle)
         case .selectAtLeastOneColumn:
             setGridStatusMessage("Select at least one column")
-        case let .copyRequested(rectangle, context):
-            finish(with: .boundConfirmed(rectangle, context))
+        case let .copyRequested(rectangle, context, authorization):
+            guard onCopyRequested != nil else {
+                finish(with: .boundConfirmed(rectangle, context))
+                return
+            }
+            beginCopy(.bound(rectangle, context, authorization))
         case .cancelled:
             finish(with: .cancelled)
         }
@@ -607,6 +662,57 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             view.statusMessage = message
             view.needsDisplay = true
         }
+    }
+
+    private func beginCopy(_ request: SelectionCopyRequest) {
+        guard copyTask == nil,
+              let onCopyRequested,
+              let sessionGeneration = sessionGuard.activeGeneration
+        else {
+            return
+        }
+        setGridStatusMessage("Copying… Press Escape to cancel")
+        copyTask = Task { @MainActor [weak self] in
+            let result = await onCopyRequested(request)
+            guard let self,
+                  !Task.isCancelled,
+                  self.sessionGuard.isCurrent(sessionGeneration)
+            else {
+                return
+            }
+            guard self.applyCopyResult(result, for: request) else {
+                self.copyTask = nil
+                return
+            }
+            self.copyTask = nil
+            self.finish(
+                with: .copyFinished(result),
+                ifCurrent: sessionGeneration
+            )
+        }
+    }
+
+    private func applyCopyResult(
+        _ result: SelectionCopyResult,
+        for request: SelectionCopyRequest
+    ) -> Bool {
+        guard case let .bound(_, _, authorization) = request else {
+            return true
+        }
+        guard var interaction = gridInteraction else {
+            return false
+        }
+        let accepted: Bool
+        switch result {
+        case .completed:
+            accepted = interaction.finishCopy(authorization, succeeded: true)
+        case .cancelled:
+            accepted = interaction.cancelCopy(authorization)
+        case .permissionRequired, .failed:
+            accepted = interaction.finishCopy(authorization, succeeded: false)
+        }
+        gridInteraction = interaction
+        return accepted
     }
 }
 
