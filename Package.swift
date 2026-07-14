@@ -27,7 +27,7 @@ let package = Package(
         ),
         .testTarget(
             name: "GridSelectCoreTests",
-            dependencies: ["GridSelectCore"]
+            dependencies: ["GridSelectCore", "GridSelect"]
         )
     ]
 )
