@@ -44,8 +44,10 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
 
     public var statusTitle: String {
         switch selectionState {
-        case .selecting, .dragging, .confirmed, .extracting, .copying:
+        case .selecting, .dragging, .confirmed, .extracting:
             return "Selection in progress"
+        case .copying:
+            return "Copying selection"
         case .completed:
             return "Copied to clipboard"
         case .cancelled:
@@ -82,8 +84,10 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
             return Self.accessibilityGuidance
         case let .failed(failure):
             return failure.statusDetail
-        case .selecting, .dragging, .confirmed, .extracting, .copying:
+        case .selecting, .dragging, .confirmed, .extracting:
             return "Finish the selection or press Escape to cancel."
+        case .copying:
+            return "GridSelect is validating the source and writing rectangular plain text. Press Escape to cancel."
         case .idle:
             break
         }

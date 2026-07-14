@@ -94,6 +94,18 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
         )
     }
 
+    func testCopyingStatusExplainsPlainTextProgressAndCancellation() {
+        let snapshot = GridSelectStatusSnapshot(
+            permissionStatus: .granted,
+            shortcutStatus: .active(displayName: "Double-Shift"),
+            selectionState: .copying
+        )
+
+        XCTAssertEqual(snapshot.statusTitle, "Copying selection")
+        XCTAssertTrue(snapshot.statusDetail.contains("rectangular plain text"))
+        XCTAssertTrue(snapshot.statusDetail.contains("Escape"))
+    }
+
     func testShortcutRegistrationFailureHasRecoveryCopy() {
         let snapshot = GridSelectStatusSnapshot(
             permissionStatus: .granted,
