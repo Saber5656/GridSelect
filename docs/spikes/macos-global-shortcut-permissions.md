@@ -15,7 +15,8 @@ cannot be expressed with Carbon hot-key registration.
 
 The event tap must:
 
-- Listen for `.flagsChanged` plus `.keyDown`. Outside the recognized handoff,
+- Listen for `.flagsChanged` plus `.keyDown`, and for `.keyUp` only while a
+  bounded matching-release tail may exist. Outside the recognized handoff,
   key-down is only a content-blind signal that invalidates a pending double-Shift
   candidate; do not inspect its key code or characters there. During the bounded
   handoff only, transiently inspect the virtual key code and Command modifier to
@@ -23,7 +24,10 @@ The event tap must:
   retain/log the inspected values.
 - Return every event unchanged outside the recognized activation handoff. During
   that bounded handoff, consume only Arrow, Command-C, and Escape into semantic
-  commands; always pass Shift release and ordinary input through.
+  commands; always pass Shift release and ordinary input through. A consumed
+  guarded key-down retains only its semantic key class for at most 500 ms so the
+  matching key-up is also consumed after handoff; unrelated and expired key-ups
+  pass through, and disablement clears the tail.
 - Retain no typed-key history and never log raw key values.
 - Be enabled only after an explicit user action grants Input Monitoring, and be
   torn down or disabled when permission is absent or revoked.
