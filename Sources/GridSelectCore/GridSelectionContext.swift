@@ -23,17 +23,39 @@ public struct GridCaretCandidate: Equatable, Sendable {
     public let anchor: GridBoundary
     public let sourceRange: Range<Int>
     public let displayID: UInt32
+    public let viewport: GridSelectionViewport?
 
     public init(
         element: SelectionElementIdentity,
         anchor: GridBoundary,
         sourceRange: Range<Int>,
-        displayID: UInt32
+        displayID: UInt32,
+        viewport: GridSelectionViewport? = nil
     ) {
         self.element = element
         self.anchor = anchor
         self.sourceRange = sourceRange
         self.displayID = displayID
+        self.viewport = viewport
+    }
+}
+
+public struct GridMouseAnchorCandidate: Equatable, Sendable {
+    public let source: SelectionSourceIdentity
+    public let element: SelectionElementIdentity
+    public let sourceRange: Range<Int>
+    public let viewport: GridSelectionViewport
+
+    public init(
+        source: SelectionSourceIdentity,
+        element: SelectionElementIdentity,
+        sourceRange: Range<Int>,
+        viewport: GridSelectionViewport
+    ) {
+        self.source = source
+        self.element = element
+        self.sourceRange = sourceRange
+        self.viewport = viewport
     }
 }
 
@@ -66,6 +88,7 @@ public struct BoundSelectionContext: Equatable, Sendable {
     public let anchor: GridBoundary
     public let sourceRange: Range<Int>
     public let display: DisplayGeometry
+    public let viewport: GridSelectionViewport?
 
     public init(
         activation: GridActivation,
@@ -73,7 +96,8 @@ public struct BoundSelectionContext: Equatable, Sendable {
         element: SelectionElementIdentity,
         anchor: GridBoundary,
         sourceRange: Range<Int>,
-        display: DisplayGeometry
+        display: DisplayGeometry,
+        viewport: GridSelectionViewport? = nil
     ) {
         self.activation = activation
         self.source = source
@@ -81,6 +105,7 @@ public struct BoundSelectionContext: Equatable, Sendable {
         self.anchor = anchor
         self.sourceRange = sourceRange
         self.display = display
+        self.viewport = viewport
     }
 }
 
@@ -89,6 +114,7 @@ public enum GridSelectionBindingFailure: Equatable, Sendable {
     case caretUnavailable
     case sourceMismatch
     case displayUnavailable
+    case invalidViewport
 }
 
 public enum GridSelectionBindingResult: Equatable, Sendable {
@@ -116,7 +142,8 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
             element: candidate.element,
             anchor: candidate.anchor,
             sourceRange: candidate.sourceRange,
-            displayID: candidate.displayID
+            displayID: candidate.displayID,
+            viewport: candidate.viewport
         )
     }
 
@@ -125,7 +152,8 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
         element: SelectionElementIdentity,
         anchor: GridBoundary,
         sourceRange: Range<Int>,
-        displayID: UInt32
+        displayID: UInt32,
+        viewport: GridSelectionViewport? = nil
     ) -> GridSelectionBindingResult {
         guard boundContext == nil else {
             return .rejected(.alreadyBound)
@@ -138,7 +166,8 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
             element: element,
             anchor: anchor,
             sourceRange: sourceRange,
-            displayID: displayID
+            displayID: displayID,
+            viewport: viewport
         )
     }
 
@@ -147,12 +176,21 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
         element: SelectionElementIdentity,
         anchor: GridBoundary,
         sourceRange: Range<Int>,
-        displayID: UInt32
+        displayID: UInt32,
+        viewport: GridSelectionViewport?
     ) -> GridSelectionBindingResult {
         guard let display = activationContext.displays.first(where: {
             $0.displayID == displayID
         }) else {
             return .rejected(.displayUnavailable)
+        }
+        if let viewport {
+            guard viewport.isUsable,
+                  viewport.displayID == displayID,
+                  anchor.row < viewport.visualRowCount
+            else {
+                return .rejected(.invalidViewport)
+            }
         }
         let context = BoundSelectionContext(
             activation: activationContext.activation,
@@ -160,7 +198,8 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
             element: element,
             anchor: anchor,
             sourceRange: sourceRange,
-            display: display
+            display: display,
+            viewport: viewport
         )
         boundContext = context
         return .bound(context)
