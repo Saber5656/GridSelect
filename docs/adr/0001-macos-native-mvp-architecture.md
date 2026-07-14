@@ -111,8 +111,10 @@ candidate. Exactly once, keyboard caret acceptance or a source-scoped first mous
 click produces `BoundSelectionContext` with the chosen AX element, anchor/range,
 and owning display. Copy-time extraction uses only the bound context and fails if
 the process, window, element, focus, permission, or generation no longer matches.
-Secure text roles/subroles and secure-input contexts are always unsupported and
-must not create an overlay or copy path.
+Secure text roles/subroles or secure input detected during activation before
+overlay presentation must not create an overlay or copy path. If detected after
+presentation during final authorization, terminate the session without writing
+to the clipboard.
 
 Production logs are allowlisted to coarse event names, permission booleans, and
 error classes. They must not contain typed keys, extracted or clipboard text,
