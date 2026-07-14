@@ -6,12 +6,17 @@ import GridSelectCore
 @MainActor
 final class GridSelectStatusModel: ObservableObject {
     @Published private(set) var snapshot: GridSelectStatusSnapshot
+    private let permissionStatusProvider: @MainActor () -> SelectionPermissionStatus
 
     init(
         permissionStatus: SelectionPermissionStatus = AccessibilityPermissionClient.status,
         shortcutStatus: ShortcutReadiness = .inactive(displayName: "⌘⇧G"),
-        selectionState: SelectionModeState = .idle
+        selectionState: SelectionModeState = .idle,
+        permissionStatusProvider: @escaping @MainActor () -> SelectionPermissionStatus = {
+            AccessibilityPermissionClient.status
+        }
     ) {
+        self.permissionStatusProvider = permissionStatusProvider
         snapshot = GridSelectStatusSnapshot(
             permissionStatus: permissionStatus,
             shortcutStatus: shortcutStatus,
@@ -21,7 +26,7 @@ final class GridSelectStatusModel: ObservableObject {
 
     func recheckPermission() {
         snapshot = snapshot.updating(
-            permissionStatus: AccessibilityPermissionClient.status
+            permissionStatus: permissionStatusProvider()
         )
     }
 
@@ -43,7 +48,7 @@ final class GridSelectStatusModel: ObservableObject {
     }
 }
 
-private enum AccessibilityPermissionClient {
+enum AccessibilityPermissionClient {
     static var status: SelectionPermissionStatus {
         AXIsProcessTrusted() ? .granted : .required
     }

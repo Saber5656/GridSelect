@@ -82,6 +82,7 @@ public final class SelectionModeCoordinator {
     private let overlay: any SelectionOverlayPresenting
     private let extractor: any RectangularTextExtracting
     private let clipboard: any ClipboardWriting
+    private let clipboardFormatter: ClipboardTextFormatter
     private let stateObserver: @MainActor @Sendable (SelectionModeState) -> Void
 
     private var isShortcutInstalled = false
@@ -96,6 +97,7 @@ public final class SelectionModeCoordinator {
         overlay: any SelectionOverlayPresenting,
         extractor: any RectangularTextExtracting,
         clipboard: any ClipboardWriting,
+        clipboardFormatter: ClipboardTextFormatter = ClipboardTextFormatter(),
         stateObserver: @escaping @MainActor @Sendable (SelectionModeState) -> Void = { _ in }
     ) {
         self.shortcut = shortcut
@@ -103,6 +105,7 @@ public final class SelectionModeCoordinator {
         self.overlay = overlay
         self.extractor = extractor
         self.clipboard = clipboard
+        self.clipboardFormatter = clipboardFormatter
         self.stateObserver = stateObserver
     }
 
@@ -276,7 +279,7 @@ public final class SelectionModeCoordinator {
             return
         }
 
-        guard !text.isEmpty else {
+        guard case let .plainText(clipboardText) = clipboardFormatter.formatExtractedText(text) else {
             finish(with: .cancelled, sessionID: sessionID)
             return
         }
@@ -287,7 +290,7 @@ public final class SelectionModeCoordinator {
         }
 
         do {
-            try clipboard.writePlainText(text)
+            try clipboard.writePlainText(clipboardText)
         } catch {
             finish(with: .failed(.clipboardWriteFailed), sessionID: sessionID)
             return

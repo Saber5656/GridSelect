@@ -80,6 +80,24 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         XCTAssertEqual(overlay.dismissalCount, 1)
     }
 
+    func testConfirmedSelectionNormalizesTextBeforeClipboardWrite() async {
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: ShortcutStub(),
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(result: .confirmed(rectangle)),
+            extractor: ExtractorStub(behavior: .succeed("alpha  \r\nbravo  \r\n")),
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+
+        XCTAssertTrue(coordinator.activate())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(clipboard.writtenTexts, ["alpha  \nbravo  "])
+        XCTAssertEqual(coordinator.state, .completed)
+    }
+
     func testMissingPermissionDoesNotPresentOverlay() async {
         let shortcut = ShortcutStub()
         let permission = PermissionStub(status: .required)

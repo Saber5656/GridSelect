@@ -3,6 +3,26 @@ import Foundation
 public struct ClipboardTextFormatter: Equatable, Sendable {
     public init() {}
 
+    /// Normalizes an already rectangular extraction for the pasteboard boundary.
+    /// Coordinate mapping owns column padding; this step owns line endings and
+    /// the no-final-newline clipboard contract.
+    public func formatExtractedText(_ text: String) -> ClipboardTextFormattingResult {
+        guard !text.isEmpty else {
+            return .noOutput
+        }
+
+        var normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        while normalized.last == "\n" {
+            normalized.removeLast()
+        }
+
+        guard !normalized.isEmpty else {
+            return .noOutput
+        }
+        return .plainText(normalized)
+    }
+
     public func format(
         text: String,
         rows rowRange: Range<Int>,

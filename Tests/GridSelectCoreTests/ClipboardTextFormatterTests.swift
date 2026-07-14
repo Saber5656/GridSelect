@@ -125,4 +125,13 @@ final class ClipboardTextFormatterTests: XCTestCase {
 
         XCTAssertEqual(result.plainText, "Q2   Q3\n15   18\n14   17\n21   23\n13   16")
     }
+
+    func testNormalizesAlreadyExtractedTextAtClipboardBoundary() {
+        XCTAssertEqual(
+            formatter.formatExtractedText("alpha  \r\nbravo  \r").plainText,
+            "alpha  \nbravo  "
+        )
+        XCTAssertEqual(formatter.formatExtractedText("\r\n"), .noOutput)
+        XCTAssertEqual(formatter.formatExtractedText(""), .noOutput)
+    }
 }
