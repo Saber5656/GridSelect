@@ -4,21 +4,29 @@ import SwiftUI
 
 @main
 struct GridSelectApp: App {
+    @NSApplicationDelegateAdaptor(GridSelectAppDelegate.self) private var appDelegate
     private let runtime = GridSelectRuntime()
-    @StateObject private var statusModel = GridSelectStatusModel()
 
     var body: some Scene {
         MenuBarExtra("GridSelect", systemImage: "rectangle.inset.filled") {
-            GridSelectMenuView(statusModel: statusModel)
+            GridSelectMenuView(
+                controller: appDelegate.controller,
+                statusModel: appDelegate.controller.statusModel
+            )
         }
 
         Settings {
-            GridSelectSettingsView(runtime: runtime, statusModel: statusModel)
+            GridSelectSettingsView(
+                runtime: runtime,
+                controller: appDelegate.controller,
+                statusModel: appDelegate.controller.statusModel
+            )
         }
     }
 }
 
 private struct GridSelectMenuView: View {
+    let controller: GridSelectApplicationController
     @ObservedObject var statusModel: GridSelectStatusModel
 
     var body: some View {
@@ -26,6 +34,16 @@ private struct GridSelectMenuView: View {
             .font(.headline)
         Text(shortcutSummary)
             .font(.caption)
+        Divider()
+        Button("Start Selection") {
+            controller.activateSelection()
+        }
+        .disabled(statusModel.snapshot.selectionState.isActive)
+        if statusModel.snapshot.selectionState.isActive {
+            Button("Cancel Selection") {
+                controller.cancelSelection()
+            }
+        }
         Divider()
         if statusModel.snapshot.permissionStatus == .required {
             Button("Open Accessibility Settings") {
@@ -50,15 +68,20 @@ private struct GridSelectMenuView: View {
     }
 
     private var shortcutSummary: String {
-        if statusModel.snapshot.shortcutStatus.isActive {
-            return "Active shortcut: \(statusModel.snapshot.shortcutStatus.displayName)"
+        switch statusModel.snapshot.shortcutStatus {
+        case let .active(displayName):
+            return "Active shortcut: \(displayName)"
+        case let .inactive(displayName):
+            return "Shortcut not active: \(displayName)"
+        case let .registrationFailed(displayName):
+            return "Shortcut unavailable: \(displayName)"
         }
-        return "Planned shortcut: \(statusModel.snapshot.shortcutStatus.displayName) (not active)"
     }
 }
 
 private struct GridSelectSettingsView: View {
     let runtime: GridSelectRuntime
+    let controller: GridSelectApplicationController
     @ObservedObject var statusModel: GridSelectStatusModel
 
     var body: some View {
@@ -108,15 +131,24 @@ private struct GridSelectSettingsView: View {
             Button("Recheck Accessibility") {
                 statusModel.recheckPermission()
             }
+
+            Button("Start Selection") {
+                controller.activateSelection()
+            }
+            .disabled(statusModel.snapshot.selectionState.isActive)
         }
         .padding(24)
         .frame(width: 420, alignment: .leading)
     }
 
     private var shortcutSettingsValue: String {
-        if statusModel.snapshot.shortcutStatus.isActive {
-            return statusModel.snapshot.shortcutStatus.displayName
+        switch statusModel.snapshot.shortcutStatus {
+        case let .active(displayName):
+            return displayName
+        case let .inactive(displayName):
+            return "\(displayName) (not active)"
+        case let .registrationFailed(displayName):
+            return "\(displayName) (registration failed)"
         }
-        return "\(statusModel.snapshot.shortcutStatus.displayName) (not active)"
     }
 }

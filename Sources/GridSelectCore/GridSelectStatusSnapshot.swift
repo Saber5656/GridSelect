@@ -96,7 +96,7 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
         case .active:
             return "Press \(shortcutStatus.displayName) to start a rectangular selection."
         case .inactive:
-            return "The default shortcut is planned as \(shortcutStatus.displayName), but runtime registration is not connected yet."
+            return "The shortcut \(shortcutStatus.displayName) is currently inactive."
         case .registrationFailed:
             return "GridSelect could not register \(shortcutStatus.displayName). Shortcut configuration is not available in this pre-alpha build."
         }

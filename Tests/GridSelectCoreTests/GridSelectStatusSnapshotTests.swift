@@ -68,7 +68,7 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
         XCTAssertFalse(snapshot.isReady)
         XCTAssertEqual(snapshot.statusTitle, "Shortcut not active")
-        XCTAssertTrue(snapshot.statusDetail.contains("runtime registration is not connected yet"))
+        XCTAssertEqual(snapshot.statusDetail, "The shortcut ⌘⇧G is currently inactive.")
         XCTAssertEqual(snapshot.statusSymbolName, "exclamationmark.triangle.fill")
     }
 
