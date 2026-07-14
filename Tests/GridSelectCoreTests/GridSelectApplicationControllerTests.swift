@@ -176,6 +176,87 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Shortcut unavailable")
     }
 
+    func testManualCaptureFailureSurfacesActionableStatus() {
+        let controller = GridSelectApplicationController(
+            shortcut: ApplicationShortcutStub(),
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .cancelled),
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+        let frame = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let context = ActivationSourceContext(
+            activation: GridActivation(generation: 1),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 1),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: frame,
+            displays: [
+                DisplayGeometry(
+                    displayID: 1,
+                    appKitFrame: frame,
+                    coreGraphicsBounds: frame,
+                    backingScale: 2
+                ),
+            ],
+            caretCandidate: nil
+        )
+
+        XCTAssertFalse(
+            controller.handleManualCaptureResult(
+                .rejected(.secureInputUnsupported),
+                sourceContext: context
+            )
+        )
+        XCTAssertEqual(
+            controller.statusModel.snapshot.selectionState,
+            .failed(.secureInputUnsupported)
+        )
+        XCTAssertEqual(
+            controller.statusModel.snapshot.statusTitle,
+            "Secure input is unsupported"
+        )
+    }
+
+    func testCancelStopsPendingManualCaptureBeforeOverlayStarts() async {
+        let overlay = ApplicationOverlayStub(result: .cancelled)
+        let controller = GridSelectApplicationController(
+            shortcut: ApplicationShortcutStub(),
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+        let frame = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let context = ActivationSourceContext(
+            activation: GridActivation(generation: 2),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 2),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: frame,
+            displays: [
+                DisplayGeometry(
+                    displayID: 1,
+                    appKitFrame: frame,
+                    coreGraphicsBounds: frame,
+                    backingScale: 2
+                ),
+            ],
+            caretCandidate: nil
+        )
+        XCTAssertTrue(
+            controller.beginManualCapture(sourceContext: context) {
+                try? await Task.sleep(for: .seconds(10))
+                return .unavailable
+            }
+        )
+
+        XCTAssertTrue(controller.cancelSelection())
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(overlay.selectionCount, 0)
+    }
+
     private func waitForTerminalState(_ controller: GridSelectApplicationController) async {
         for _ in 0..<100 where controller.statusModel.snapshot.selectionState.isActive {
             await Task.yield()
@@ -214,6 +295,7 @@ private final class ApplicationShortcutStub: SelectionShortcutRegistering {
     private func testSourceContext(generation: UInt64) -> ActivationSourceContext {
         ActivationSourceContext(
             activation: GridActivation(generation: generation),
+            sessionIdentity: SelectionSessionIdentity(rawValue: generation),
             source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
             sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
             displays: [

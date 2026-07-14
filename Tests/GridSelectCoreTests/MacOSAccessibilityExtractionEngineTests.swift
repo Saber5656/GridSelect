@@ -35,6 +35,25 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         XCTAssertEqual(client.boundsReadCount, 0)
     }
 
+    func testSecureDescendantStopsReadableContainerBeforeTextCalls() {
+        let client = FakeAccessibilityClient()
+        let container = client.addElement("container", pid: 10)
+        let secureChild = client.addElement(
+            "secure-child",
+            pid: 10,
+            role: "AXSecureTextField"
+        )
+        client.setParent(container, for: secureChild)
+        client.configureMonospace(container, lines: ["aggregate secret"])
+        client.hitTested = container
+
+        XCTAssertThrowsError(try engine(client).extract(rectangle: selection, display: display)) {
+            XCTAssertEqual($0 as? MacOSAccessibilityExtractionError, .secureTextElement)
+        }
+        XCTAssertEqual(client.textReadCount, 0)
+        XCTAssertEqual(client.boundsReadCount, 0)
+    }
+
     func testCanonicalSecureSubroleStopsBeforeTextCalls() {
         let client = FakeAccessibilityClient()
         let hit = client.addElement(
@@ -257,6 +276,20 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         }
     }
 
+    func testOversizedChildListFailsBeforeTextRead() {
+        let client = FakeAccessibilityClient()
+        let hit = client.addElement("hit", pid: 10)
+        client.configureMonospace(hit, lines: ["must not read"])
+        client.hitTested = hit
+        client.forcedChildCount = 1_000
+
+        XCTAssertThrowsError(try engine(client).extract(rectangle: selection, display: display)) {
+            XCTAssertEqual($0 as? MacOSAccessibilityExtractionError, .resourceLimitExceeded)
+        }
+        XCTAssertEqual(client.textReadCount, 0)
+        XCTAssertEqual(client.boundsReadCount, 0)
+    }
+
     func testOverlongAXStringResponseIsRejected() {
         let client = FakeAccessibilityClient()
         let hit = client.addElement("hit", pid: 10)
@@ -300,6 +333,594 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         XCTAssertEqual(client.textReadCount, 0)
     }
 
+    func testBoundExtractionRevalidatesFocusAfterSnapshot() async {
+        let client = FakeAccessibilityClient()
+        let original = client.addElement("original", pid: 10)
+        let replacement = client.addElement("replacement", pid: 10)
+        client.configureMonospace(original, lines: ["original"])
+        client.configureMonospace(replacement, lines: ["replacement"])
+        client.focused = original
+        let enteredSnapshot = DispatchSemaphore(value: 0)
+        let releaseSnapshot = DispatchSemaphore(value: 0)
+        client.parameterizedNamesBarrier = (enteredSnapshot, releaseSnapshot)
+        let extractionEngine = engine(client)
+        let selectedRectangle = selection
+        let displayGeometry = display
+
+        let task = Task.detached {
+            try extractionEngine.extract(
+                rectangle: selectedRectangle,
+                display: displayGeometry,
+                from: original,
+                requiredPID: 10
+            )
+        }
+        XCTAssertEqual(enteredSnapshot.wait(timeout: .now() + 2), .success)
+        client.focused = replacement
+        releaseSnapshot.signal()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected post-snapshot focus mismatch")
+        } catch {
+            XCTAssertEqual(error as? MacOSAccessibilityExtractionError, .targetMismatch)
+        }
+    }
+
+    func testSecureDescendantAddedDuringSnapshotPreventsOutput() async {
+        let client = FakeAccessibilityClient()
+        let container = client.addElement("container", pid: 10)
+        client.configureMonospace(container, lines: ["aggregate"])
+        client.hitTested = container
+        let enteredSnapshot = DispatchSemaphore(value: 0)
+        let releaseSnapshot = DispatchSemaphore(value: 0)
+        client.parameterizedNamesBarrier = (enteredSnapshot, releaseSnapshot)
+        let extractionEngine = engine(client)
+        let selectedRectangle = selection
+        let displayGeometry = display
+
+        let task = Task.detached {
+            try extractionEngine.extract(
+                rectangle: selectedRectangle,
+                display: displayGeometry
+            )
+        }
+        XCTAssertEqual(enteredSnapshot.wait(timeout: .now() + 2), .success)
+        let secure = client.addElement(
+            "late-secure",
+            pid: 10,
+            role: "AXSecureTextField"
+        )
+        client.setParent(container, for: secure)
+        releaseSnapshot.signal()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected secure descendant rejection")
+        } catch {
+            XCTAssertEqual(error as? MacOSAccessibilityExtractionError, .secureTextElement)
+        }
+    }
+
+    @MainActor
+    func testCaretBindingExtractsFromExactElementWithoutCopyTimeHitTest() async throws {
+        let client = FakeAccessibilityClient()
+        let original = client.addElement(
+            "original",
+            pid: 10,
+            frame: CGRect(x: 80, y: 40, width: 300, height: 200)
+        )
+        let replacement = client.addElement(
+            "replacement",
+            pid: 10,
+            frame: CGRect(x: 80, y: 40, width: 300, height: 200)
+        )
+        let axWindow = client.addElement(
+            "window",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(axWindow, for: original)
+        client.setWindow(axWindow, for: replacement)
+        client.configureMonospace(original, lines: ["original"])
+        client.configureMonospace(replacement, lines: ["replaced"])
+        client.focused = original
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+        let activation = GridActivation(generation: 7)
+        let session = SelectionSessionIdentity(rawValue: 17)
+        let source = SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4)
+        let window = ScreenRectangle(x: 0, y: 0, width: 500, height: 500)
+
+        let caret: GridCaretCandidate
+        switch service.captureCaretCandidate(
+                activation: activation,
+                sessionIdentity: session,
+                source: source,
+                sourceWindowFrame: window,
+                displays: [display]
+        ) {
+        case let .captured(candidate):
+            caret = candidate
+        default:
+            return XCTFail("Expected captured caret")
+        }
+        var binder = GridSelectionContextBinder(
+            activationContext: ActivationSourceContext(
+                activation: activation,
+                sessionIdentity: session,
+                source: source,
+                sourceWindowFrame: window,
+                displays: [display],
+                caretCandidate: caret
+            )
+        )
+        guard case let .bound(context) = binder.bindKeyboardCaret() else {
+            return XCTFail("Expected bound caret")
+        }
+        client.hitTested = replacement
+
+        let output = try await service.extractText(in: selection, boundContext: context)
+
+        XCTAssertEqual(output, "orig")
+        XCTAssertGreaterThan(client.textReadsByElement["original", default: 0], 0)
+        XCTAssertEqual(client.textReadsByElement["replacement", default: 0], 0)
+        XCTAssertEqual(client.hitTestCallCount, 0)
+
+        client.focused = replacement
+        do {
+            try await service.validateCopyAuthorization(for: context)
+            XCTFail("Expected authorization-time focus mismatch")
+        } catch let error as SelectionSourceFailureError {
+            XCTAssertEqual(error.failure, .sourceContextInvalid)
+        }
+
+        service.discardBoundContextsSynchronously(for: session)
+        do {
+            _ = try await service.extractText(in: selection, boundContext: context)
+            XCTFail("Expected discarded context rejection")
+        } catch let error as SelectionSourceFailureError {
+            XCTAssertEqual(error.failure, .sourceContextInvalid)
+        }
+    }
+
+    @MainActor
+    func testBoundExtractionRejectsFocusChangeWithoutReadingReplacement() async throws {
+        let client = FakeAccessibilityClient()
+        let original = client.addElement("original", pid: 10)
+        let replacement = client.addElement("replacement", pid: 10)
+        let axWindow = client.addElement(
+            "window",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(axWindow, for: original)
+        client.setWindow(axWindow, for: replacement)
+        client.configureMonospace(original, lines: ["original"])
+        client.configureMonospace(replacement, lines: ["replacement"])
+        client.focused = original
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+        let activation = GridActivation(generation: 9)
+        let session = SelectionSessionIdentity(rawValue: 19)
+        let source = SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4)
+        let window = ScreenRectangle(x: 0, y: 0, width: 500, height: 500)
+        let caret: GridCaretCandidate
+        switch service.captureCaretCandidate(
+                activation: activation,
+                sessionIdentity: session,
+                source: source,
+                sourceWindowFrame: window,
+                displays: [display]
+        ) {
+        case let .captured(candidate):
+            caret = candidate
+        default:
+            return XCTFail("Expected captured caret")
+        }
+        var binder = GridSelectionContextBinder(
+            activationContext: ActivationSourceContext(
+                activation: activation,
+                sessionIdentity: session,
+                source: source,
+                sourceWindowFrame: window,
+                displays: [display],
+                caretCandidate: caret
+            )
+        )
+        guard case let .bound(context) = binder.bindKeyboardCaret() else {
+            return XCTFail("Expected bound caret")
+        }
+        let readsBeforeExtraction = client.textReadCount
+        client.focused = replacement
+
+        do {
+            _ = try await service.extractText(in: selection, boundContext: context)
+            XCTFail("Expected focus mismatch")
+        } catch let error as SelectionSourceFailureError {
+            XCTAssertEqual(error.failure, .sourceContextInvalid)
+        }
+        XCTAssertEqual(client.textReadCount, readsBeforeExtraction)
+        XCTAssertEqual(client.textReadsByElement["replacement", default: 0], 0)
+    }
+
+    @MainActor
+    func testMouseBindingRejectsDifferentProcessBeforeTextRead() {
+        let client = FakeAccessibilityClient()
+        let foreign = client.addElement("foreign", pid: 20)
+        client.configureMonospace(foreign, lines: ["foreign"])
+        client.hitTested = foreign
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+        let context = ActivationSourceContext(
+            activation: GridActivation(generation: 8),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 18),
+            source: SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+            displays: [display],
+            caretCandidate: nil
+        )
+
+        XCTAssertEqual(
+            service.resolveMouseAnchor(
+                at: SelectionPoint(x: 110, y: 940),
+                sourceContext: context
+            ),
+            .rejected(.sourceContextInvalid)
+        )
+        XCTAssertEqual(client.textReadCount, 0)
+    }
+
+    @MainActor
+    func testCaretAndMouseReuseExactElementIdentityWithinSession() {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("text", pid: 10)
+        let axWindow = client.addElement(
+            "window",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(axWindow, for: text)
+        client.configureMonospace(text, lines: ["abcdef"])
+        client.focused = text
+        client.hitTested = text
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+        let activation = GridActivation(generation: 10)
+        let session = SelectionSessionIdentity(rawValue: 20)
+        let source = SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4)
+        let window = ScreenRectangle(x: 0, y: 0, width: 500, height: 500)
+        let caret: GridCaretCandidate
+        switch service.captureCaretCandidate(
+            activation: activation,
+            sessionIdentity: session,
+            source: source,
+            sourceWindowFrame: window,
+            displays: [display]
+        ) {
+        case let .captured(candidate):
+            caret = candidate
+        default:
+            return XCTFail("Expected captured caret")
+        }
+        let context = ActivationSourceContext(
+            activation: activation,
+            sessionIdentity: session,
+            source: source,
+            sourceWindowFrame: window,
+            displays: [display],
+            caretCandidate: caret
+        )
+
+        guard case let .resolved(mouse) = service.resolveMouseAnchor(
+            at: SelectionPoint(x: 110, y: 940),
+            sourceContext: context
+        ) else {
+            return XCTFail("Expected mouse anchor")
+        }
+        XCTAssertEqual(mouse.element, caret.element)
+        XCTAssertEqual(caret.sourceRange, 1..<1)
+        XCTAssertEqual(mouse.sourceRange, 1..<1)
+        XCTAssertEqual(service.registeredContextCount, 1)
+    }
+
+    @MainActor
+    func testCaretAndMouseRejectTabsAsUnsupportedText() {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("text", pid: 10)
+        let axWindow = client.addElement(
+            "window",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(axWindow, for: text)
+        client.configureMonospace(text, lines: ["a\tb"])
+        client.focused = text
+        client.hitTested = text
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+        let activation = GridActivation(generation: 15)
+        let session = SelectionSessionIdentity(rawValue: 25)
+        let source = SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4)
+        let window = ScreenRectangle(x: 0, y: 0, width: 500, height: 500)
+
+        switch service.captureCaretCandidate(
+            activation: activation,
+            sessionIdentity: session,
+            source: source,
+            sourceWindowFrame: window,
+            displays: [display]
+        ) {
+        case .rejected(.unsupportedText):
+            break
+        default:
+            XCTFail("Expected caret tab rejection")
+        }
+
+        let context = ActivationSourceContext(
+            activation: activation,
+            sessionIdentity: session,
+            source: source,
+            sourceWindowFrame: window,
+            displays: [display],
+            caretCandidate: nil
+        )
+        XCTAssertEqual(
+            service.resolveMouseAnchor(
+                at: SelectionPoint(x: 110, y: 940),
+                sourceContext: context
+            ),
+            .rejected(.unsupportedText)
+        )
+        XCTAssertEqual(service.registeredContextCount, 0)
+    }
+
+    func testCopyAuthorizationRejectsContextDiscardedDuringValidation() async throws {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("text", pid: 10)
+        let axWindow = client.addElement(
+            "window",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(axWindow, for: text)
+        client.configureMonospace(text, lines: ["abcdef"])
+        client.focused = text
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+        let activation = GridActivation(generation: 16)
+        let session = SelectionSessionIdentity(rawValue: 26)
+        let source = SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4)
+        let window = ScreenRectangle(x: 0, y: 0, width: 500, height: 500)
+        let caret: GridCaretCandidate
+        switch service.captureCaretCandidate(
+            activation: activation,
+            sessionIdentity: session,
+            source: source,
+            sourceWindowFrame: window,
+            displays: [display]
+        ) {
+        case let .captured(candidate):
+            caret = candidate
+        default:
+            return XCTFail("Expected captured caret")
+        }
+        var binder = GridSelectionContextBinder(
+            activationContext: ActivationSourceContext(
+                activation: activation,
+                sessionIdentity: session,
+                source: source,
+                sourceWindowFrame: window,
+                displays: [display],
+                caretCandidate: caret
+            )
+        )
+        guard case let .bound(context) = binder.bindKeyboardCaret() else {
+            return XCTFail("Expected bound caret")
+        }
+        let enteredValidation = DispatchSemaphore(value: 0)
+        let releaseValidation = DispatchSemaphore(value: 0)
+        client.focusedElementBarrier = (enteredValidation, releaseValidation)
+
+        let authorization = Task.detached {
+            try await service.validateCopyAuthorization(for: context)
+        }
+        XCTAssertEqual(enteredValidation.wait(timeout: .now() + 2), .success)
+        service.discardBoundContextsSynchronously(for: session)
+        releaseValidation.signal()
+
+        do {
+            try await authorization.value
+            XCTFail("Expected discarded context rejection")
+        } catch let error as SelectionSourceFailureError {
+            XCTAssertEqual(error.failure, .sourceContextInvalid)
+        }
+    }
+
+    @MainActor
+    func testAmbiguousSamePIDWindowFrameRejectsBeforeTextRead() {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("text", pid: 10)
+        let firstWindow = client.addElement(
+            "window-a",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        _ = client.addElement(
+            "window-b",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(firstWindow, for: text)
+        client.configureMonospace(text, lines: ["ambiguous"])
+        client.focused = text
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+
+        switch service.captureCaretCandidate(
+            activation: GridActivation(generation: 11),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 21),
+            source: SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+            displays: [display]
+        ) {
+        case .rejected(.sourceContextInvalid):
+            break
+        default:
+            XCTFail("Expected ambiguous window rejection")
+        }
+        XCTAssertEqual(client.textReadCount, 0)
+        XCTAssertEqual(service.registeredContextCount, 0)
+    }
+
+    @MainActor
+    func testUnreadableSiblingWindowFailsClosedBeforeTextRead() {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("text", pid: 10)
+        let sourceWindow = client.addElement(
+            "window-a",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        _ = client.addElement(
+            "window-b",
+            pid: 10,
+            frame: nil,
+            role: kAXWindowRole as String
+        )
+        client.setWindow(sourceWindow, for: text)
+        client.configureMonospace(text, lines: ["must not read"])
+        client.focused = text
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+
+        switch service.captureCaretCandidate(
+            activation: GridActivation(generation: 14),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 24),
+            source: SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+            displays: [display]
+        ) {
+        case .rejected(.sourceContextInvalid):
+            break
+        default:
+            XCTFail("Expected unreadable window rejection")
+        }
+        XCTAssertEqual(client.textReadCount, 0)
+        XCTAssertEqual(service.registeredContextCount, 0)
+    }
+
+    @MainActor
+    func testSecureInputRejectsBeforeAccessibilityTextRead() {
+        let client = FakeAccessibilityClient()
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { true }
+        )
+
+        switch service.captureCaretCandidate(
+            activation: GridActivation(generation: 12),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 22),
+            source: SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+            displays: [display]
+        ) {
+        case .rejected(.secureInputUnsupported):
+            break
+        default:
+            XCTFail("Expected secure input rejection")
+        }
+        XCTAssertEqual(client.textReadCount, 0)
+        XCTAssertEqual(client.boundsReadCount, 0)
+        XCTAssertEqual(service.registeredContextCount, 0)
+    }
+
+    func testSecureInputEnabledDuringCaretSnapshotPreventsRegistration() async {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("text", pid: 10)
+        let axWindow = client.addElement(
+            "window",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(axWindow, for: text)
+        client.configureMonospace(text, lines: ["abcdef"])
+        client.focused = text
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let enteredSnapshot = DispatchSemaphore(value: 0)
+        let releaseSnapshot = DispatchSemaphore(value: 0)
+        client.parameterizedNamesBarrier = (enteredSnapshot, releaseSnapshot)
+        let secureInput = SecureInputFlag(false)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { secureInput.value }
+        )
+        let displayGeometry = display
+
+        let task = Task.detached {
+            service.captureCaretCandidate(
+                activation: GridActivation(generation: 13),
+                sessionIdentity: SelectionSessionIdentity(rawValue: 23),
+                source: SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4),
+                sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+                displays: [displayGeometry]
+            )
+        }
+        XCTAssertEqual(enteredSnapshot.wait(timeout: .now() + 2), .success)
+        secureInput.value = true
+        releaseSnapshot.signal()
+
+        switch await task.value {
+        case .rejected(.secureInputUnsupported):
+            break
+        default:
+            XCTFail("Expected secure input rejection after snapshot")
+        }
+        XCTAssertEqual(service.registeredContextCount, 0)
+    }
+
     private func engine(_ client: FakeAccessibilityClient) -> MacOSAccessibilityExtractionEngine {
         MacOSAccessibilityExtractionEngine(client: client)
     }
@@ -325,6 +946,8 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
         var role: String?
         var subrole: String?
         var parentID: String?
+        var childIDs: [String] = []
+        var windowID: String?
         var parameterizedNames: [String] = []
         var visibleRange: CFRange?
         var numberOfCharacters: Int?
@@ -341,15 +964,19 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
     var isTrusted = true
     var hitTested: AccessibilityElementHandle?
     var focused: AccessibilityElementHandle?
+    var selectedRange: CFRange?
     var elements: [String: ElementData] = [:]
     var forcedLineNumbers: (first: Int, last: Int)?
     var forcedString: String?
     var parameterizedNamesBarrier: (entered: DispatchSemaphore, release: DispatchSemaphore)?
+    var focusedElementBarrier: (entered: DispatchSemaphore, release: DispatchSemaphore)?
     var pidUnavailableIDs: Set<String> = []
     var supportsSingleCharacterBounds = true
+    var forcedChildCount: Int?
     private(set) var textReadCount = 0
     private(set) var boundsReadCount = 0
     private(set) var textReadsByElement: [String: Int] = [:]
+    private(set) var hitTestCallCount = 0
 
     func addElement(
         _ id: String,
@@ -364,6 +991,11 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
 
     func setParent(_ parent: AccessibilityElementHandle, for child: AccessibilityElementHandle) {
         elements[id(child)]?.parentID = id(parent)
+        elements[id(parent)]?.childIDs.append(id(child))
+    }
+
+    func setWindow(_ window: AccessibilityElementHandle, for element: AccessibilityElementHandle) {
+        elements[id(element)]?.windowID = id(window)
     }
 
     func configureMonospace(
@@ -419,14 +1051,74 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
         elements[identifier] = data
     }
 
-    func hitTestedElement(at point: CGPoint) -> AccessibilityElementHandle? { hitTested }
-    func focusedElement() -> AccessibilityElementHandle? { focused }
+    func hitTestedElement(
+        at point: CGPoint,
+        inProcess processIdentifier: pid_t?
+    ) -> AccessibilityElementHandle? {
+        hitTestCallCount += 1
+        return hitTested
+    }
+    func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle? {
+        if let barrier = focusedElementBarrier {
+            barrier.entered.signal()
+            _ = barrier.release.wait(timeout: .now() + 2)
+        }
+        focused
+    }
 
     func parent(of element: AccessibilityElementHandle) -> AccessibilityElementHandle? {
         guard let parentID = elements[id(element)]?.parentID else {
             return nil
         }
         return AccessibilityElementHandle(testIdentifier: parentID)
+    }
+
+    func childCount(of element: AccessibilityElementHandle) -> Int? {
+        forcedChildCount ?? elements[id(element)]?.childIDs.count
+    }
+
+    func children(
+        of element: AccessibilityElementHandle,
+        limit: Int
+    ) -> [AccessibilityElementHandle]? {
+        guard let identifiers = elements[id(element)]?.childIDs,
+              identifiers.count <= limit
+        else {
+            return nil
+        }
+        return identifiers.map(AccessibilityElementHandle.init(testIdentifier:))
+    }
+
+    func window(of element: AccessibilityElementHandle) -> AccessibilityElementHandle? {
+        guard let windowID = elements[id(element)]?.windowID else {
+            return nil
+        }
+        return AccessibilityElementHandle(testIdentifier: windowID)
+    }
+
+    func windowCount(inProcess processIdentifier: pid_t) -> Int? {
+        windowsForProcess(processIdentifier).count
+    }
+
+    func windows(
+        inProcess processIdentifier: pid_t,
+        limit: Int
+    ) -> [AccessibilityElementHandle]? {
+        let windows = windowsForProcess(processIdentifier)
+        return windows.count <= limit ? windows : nil
+    }
+
+    private func windowsForProcess(
+        _ processIdentifier: pid_t
+    ) -> [AccessibilityElementHandle] {
+        elements.compactMap { identifier, data in
+            guard data.pid == processIdentifier,
+                  data.role == (kAXWindowRole as String)
+            else {
+                return nil
+            }
+            return AccessibilityElementHandle(testIdentifier: identifier)
+        }
     }
 
     func isSameElement(
@@ -455,6 +1147,10 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
 
     func visibleCharacterRange(of element: AccessibilityElementHandle) -> CFRange? {
         elements[id(element)]?.visibleRange
+    }
+
+    func selectedTextRange(of element: AccessibilityElementHandle) -> CFRange? {
+        selectedRange
     }
 
     func numberOfCharacters(in element: AccessibilityElementHandle) -> Int? {
@@ -531,5 +1227,19 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
 
     private func id(_ element: AccessibilityElementHandle) -> String {
         element.testIdentifier!
+    }
+}
+
+private final class SecureInputFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Bool
+
+    init(_ value: Bool) {
+        storedValue = value
+    }
+
+    var value: Bool {
+        get { lock.withLock { storedValue } }
+        set { lock.withLock { storedValue = newValue } }
     }
 }

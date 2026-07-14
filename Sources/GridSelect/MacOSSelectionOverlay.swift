@@ -11,7 +11,13 @@ protocol MacOSGridMouseAnchorResolving: AnyObject {
     func resolveMouseAnchor(
         at appKitScreenPoint: SelectionPoint,
         sourceContext: ActivationSourceContext
-    ) -> GridMouseAnchorCandidate?
+    ) -> MacOSGridMouseAnchorResolution
+}
+
+enum MacOSGridMouseAnchorResolution: Equatable {
+    case resolved(GridMouseAnchorCandidate)
+    case unavailable
+    case rejected(SelectionSourceFailure)
 }
 
 @MainActor
@@ -19,8 +25,8 @@ private final class UnavailableGridMouseAnchorResolver: MacOSGridMouseAnchorReso
     func resolveMouseAnchor(
         at appKitScreenPoint: SelectionPoint,
         sourceContext: ActivationSourceContext
-    ) -> GridMouseAnchorCandidate? {
-        nil
+    ) -> MacOSGridMouseAnchorResolution {
+        .unavailable
     }
 }
 
@@ -81,6 +87,11 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
                     preferredDisplayID: preferredDisplayID(for: sourceContext),
                     sessionGeneration: sessionGeneration
                 )
+                if sourceContext?.caretCandidate == nil {
+                    setGridStatusMessage(
+                        "Keyboard caret unavailable — click and drag in supported monospace text"
+                    )
+                }
                 guard verifyInputOwnership(), let commands = onReady() else {
                     finish(with: .cancelled, ifCurrent: sessionGeneration)
                     return
@@ -453,12 +464,21 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             return
         }
         sessionGuard.endMouseDrag(generation: sessionGeneration)
-        guard let sourceContext,
-              let candidate = mouseAnchorResolver.resolveMouseAnchor(
+        guard let sourceContext else {
+            return
+        }
+        let resolution = mouseAnchorResolver.resolveMouseAnchor(
                   at: point,
                   sourceContext: sourceContext
               )
-        else {
+        let candidate: GridMouseAnchorCandidate
+        switch resolution {
+        case let .resolved(value):
+            candidate = value
+        case .unavailable:
+            return
+        case let .rejected(failure):
+            finish(with: .sourceFailed(failure), ifCurrent: sessionGeneration)
             return
         }
         guard candidate.viewport.displayID == displayID,
@@ -683,6 +703,9 @@ private final class SelectionOverlayView: NSView {
         dirtyRect.fill()
 
         guard let rectangle = localRectangle() else {
+            if let statusMessage {
+                drawStatusMessage(statusMessage, above: nil)
+            }
             return
         }
 
@@ -741,7 +764,7 @@ private final class SelectionOverlayView: NSView {
         )
     }
 
-    private func drawStatusMessage(_ message: String, above rectangle: NSRect) {
+    private func drawStatusMessage(_ message: String, above rectangle: NSRect?) {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
             .foregroundColor: NSColor.white,
@@ -753,9 +776,10 @@ private final class SelectionOverlayView: NSView {
             width: textSize.width + padding.width * 2,
             height: textSize.height + padding.height * 2
         )
-        let proposedX = rectangle.midX - bubbleSize.width / 2
+        let proposedX = (rectangle?.midX ?? bounds.midX) - bubbleSize.width / 2
         let x = min(max(bounds.minX + 8, proposedX), bounds.maxX - bubbleSize.width - 8)
-        let proposedY = rectangle.maxY + 8
+        let proposedY = rectangle.map { $0.maxY + 8 }
+            ?? (bounds.midY - bubbleSize.height / 2)
         let y = min(proposedY, bounds.maxY - bubbleSize.height - 8)
         let bubble = NSRect(origin: NSPoint(x: x, y: y), size: bubbleSize)
         let path = NSBezierPath(roundedRect: bubble, xRadius: 6, yRadius: 6)
