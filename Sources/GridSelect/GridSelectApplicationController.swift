@@ -71,6 +71,11 @@ final class GridSelectApplicationController {
                     statusModel?.recheckPermission()
                     permissionSetupPresenter.presentPermissionSetup()
                 }
+                if state == .failed(.listenerDisabled) {
+                    statusModel?.updateShortcutStatus(
+                        .inactive(displayName: MacOSGlobalShortcut.displayName)
+                    )
+                }
                 statusModel?.updateSelectionState(state)
             }
         )
