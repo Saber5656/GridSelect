@@ -15,10 +15,17 @@ Retina, and permission decisions that should shape the first prototype.
 
 ## Recommendation
 
+> [!warning] 2026-07-15 production contract — not yet validated
+> Keyboard anchoring, frozen selection, local Command-C, and the permission-aware
+> lifecycle below are the approved production design. The prototype and its
+> recorded results later in this document cover only the historical mouse-drag
+> implementation and are not evidence that these new behaviors pass.
+
 Use one borderless, transparent `NSPanel` per `NSScreen` while the selection
 session is active. Configure it as a non-activating panel, keep it above normal
-app windows, draw only the selection affordance, and close it immediately on
-cancel or confirm.
+app windows, and draw only the zero- or nonzero-width selection affordance. Keep
+it visible after Shift or the mouse button is released; close it on Escape,
+successful Command-C copy, or a terminal failure.
 
 Recommended MVP defaults:
 
@@ -30,7 +37,7 @@ Recommended MVP defaults:
 | Window level | Start with `.statusBar`; test `.floating` and `.screenSaver` as fallbacks | `.floating` may be enough for normal windows. `.statusBar` is a stronger MVP default. `.screenSaver` is very high and should be used only during active selection if required. |
 | Spaces/full screen | `[.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]` | Selection should appear in the active Space and above full-screen apps during the session. |
 | Mouse handling | Overlay captures mouse events; do not set `ignoresMouseEvents` while selecting | Dragging the rectangle requires the overlay to receive mouse down/drag/up. |
-| Keyboard handling | Prefer panel/view `keyDown` plus a local event monitor for Escape/Return | Avoid global key monitoring permissions in the MVP. |
+| Keyboard handling | Use the active event-tap transition guard from recognized double-Shift until source/caret capture and overlay key ownership complete; then route commands locally | Only Arrow, Command-C, and Escape are consumed during the bounded handoff; ordinary input and Shift release pass through. |
 | Selection output | Store screen-space points and the owning screen/display ID | Pixels are a later screenshot/OCR concern. |
 
 ## Apple documentation notes
@@ -48,7 +55,7 @@ Primary sources used:
 | Coordinate conversion | [High Resolution Guidelines for OS X: APIs for Supporting High Resolution](https://developer.apple.com/library/archive/documentation/GraphicsAnimation/Conceptual/HighResolutionOSX/APIs/APIs.html) | Prefer AppKit conversion APIs for screen/backing coordinates instead of doing scale math by hand. |
 | Event monitors | [Cocoa Event Handling Guide: Monitoring Events](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/MonitoringEvents/MonitoringEvents.html) | Local monitors see this app's events and can suppress them; global monitors see other apps' events but cannot modify delivery and key events require accessibility trust. |
 | Screen capture permission | [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit/) | Capturing screen content requires Screen Recording permission; the overlay-only MVP does not capture screen content. |
-| Accessibility trust | [AXIsProcessTrustedWithOptions](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions) | Accessibility trust is relevant only if the app later uses Accessibility APIs or permissioned global input strategies. |
+| Accessibility trust | [AXIsProcessTrustedWithOptions](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions) | Accessibility trust is required by the production flow for source-scoped caret, element, and text geometry access. |
 
 ## Overlay/window levels
 
@@ -114,10 +121,14 @@ Notes:
 
 | Setting | Why it matters |
 |---|---|
-| `canBecomeKey` | Borderless panels often need an explicit key-window strategy for Escape/Return handling. |
+| `canBecomeKey` | Borderless panels need an explicit key-window strategy for Command-C/Escape handling. |
 | `canBecomeMain = false` | The overlay is a transient tool, not the document/main surface. |
-| `orderFrontRegardless()` | Shows the overlay without activating GridSelect or changing main/key windows by itself; pair it with `makeKey()`, `makeFirstResponder(_:)`, or a local event monitor when Escape/Return must be handled by the overlay. |
-| `ignoresMouseEvents = false` | Required for drag capture. For passive display after selection, it can be set to `true` or the panel can be closed. |
+| `orderFrontRegardless()` | Shows the overlay without activating GridSelect or changing main/key windows by itself; pair it with `makeKey()`, `makeFirstResponder(_:)`, and verified local Command-C/Escape routing. |
+| `ignoresMouseEvents = false` | Required on the owning panel throughout `armed`, adjustment, drag, and frozen `selected` states. Making it click-through is a terminal cancel that must run cleanup at the same time. Nonowning display panels remain visually passive but must not become alternate key responders. |
+
+After `makeKey()` and `makeFirstResponder(overlayView)`, the session verifies
+`panel.isKeyWindow` and identity of the actual first responder. If either check
+fails, it returns no selection and closes every panel through terminal cleanup.
 
 ## Input handling
 
@@ -127,16 +138,26 @@ State machine:
 
 | State | Event | Action |
 |---|---|---|
-| `idle` | Mouse down inside overlay | Record anchor in overlay view coordinates and transition to `dragging`. |
 | `dragging` | Mouse dragged | Normalize anchor/current point into a rectangle and redraw. |
-| `dragging` | Mouse up | Either confirm immediately or transition to `adjusting`, depending on UX choice. |
-| `dragging` or `adjusting` | Escape | Cancel, close panels, return no selection. |
-| `adjusting` | Return | Confirm current selection. |
-| Any active state | Display configuration change | Cancel or rebuild panels and keep the previous rect only if it still belongs to a live screen. |
+| `inactive` | Valid double-Shift and permissions revalidated | Create a generation-tagged `armed` session bound to the captured source process; attempt a caret snapshot before showing the overlay. |
+| `armed` | Caret snapshot is supported and second Shift remains held | Record the caret boundary as immutable anchor, initialize focus at the same boundary (zero area), and enter `keyboardAdjusting`. |
+| `armed` | Caret snapshot is unsupported but source is otherwise eligible | Disable keyboard adjustment for this session, show actionable status, and keep first-click mouse selection available. |
+| `armed` | First mouse down inside the captured source process | Bind the clicked AX element/display, record the click anchor, and enter `dragging`. |
+| `keyboardAdjusting` | Left/Right while second Shift is held | Move the focus column boundary by one cell per event/repeat and redraw every included row. |
+| `keyboardAdjusting` | Up/Down while second Shift is held | Move the focus visual row by one while preserving the focus column, adding/removing an adjacent row cursor. |
+| `keyboardAdjusting` | Second Shift released | Freeze the current zero- or nonzero-width selection; do not copy. |
+| `dragging` | Mouse up | Freeze the snapped zero- or nonzero-width selection; do not copy. |
+| `selected` | Command-C with zero width | Consume the Grid command, leave the clipboard unchanged, retain the selection, and show “Select at least one column.” |
+| `selected` with zero width | First mouse down | Replace the caret anchor with the snapped mouse boundary and enter `dragging`. |
+| `selected` | First Command-C with nonzero width | Atomically enter `copying` with an immutable source/rectangle snapshot and generation; consume repeated Command-C. |
+| `copying` | Current-generation extraction/copy result | Publish only the current session result, report status, and run terminal cleanup. Discard stale or canceled completions without writing. |
+| Any active state | Escape | Cancel, close panels, return no selection. |
+| Any active state | Overlay loses key/first-responder ownership, source identity changes, permission fails, or listener is disabled | Fail closed through the same idempotent cleanup path without copying. |
+| Any active state | Display configuration change | Treat the MVP session as terminal: cancel and clean up every panel without reusing the previous rectangle. |
 
-For the first usable path, use drag-to-confirm on mouse up and Escape to cancel.
-Return-to-confirm becomes useful only if the MVP adds handles or post-drag
-adjustment.
+Keyboard and mouse differ only in how they establish and adjust the anchor. Both
+paths converge on the same persistent `selected` state. Input release freezes
+the rectangle, and only Command-C requests extraction/copy.
 
 Avoid global mouse monitors for rectangle dragging. If the panel covers each
 screen and accepts mouse events, mouse down/drag/up are local overlay events.
@@ -148,14 +169,16 @@ Keyboard handling options:
 | Option | Permission profile | Tradeoff |
 |---|---|---|
 | `keyDown` on the overlay view/panel | No extra permission | Works if the panel is key during selection. |
-| Local `NSEvent` monitor | No extra permission | Useful for Escape/Return while the app is dispatching overlay events. Remove it when the panel closes. |
-| Global `NSEvent` monitor | Accessibility trust for key events | Avoid in MVP; use only if non-activating keyboard handling proves unreliable. |
-| `CGEventTap` | Likely Input Monitoring for keyboard use | Out of scope for this overlay spike. |
+| Local `NSEvent` monitor | No extra permission | Useful for Command-C/Escape while the app is dispatching overlay events. Remove it when the panel closes. |
+| Global `NSEvent` monitor | Accessibility trust for key events | Do not use as a fallback; it conflates the text-inspection permission with keyboard monitoring. |
+| Narrow active `CGEventTap` | Input Monitoring for keyboard monitoring; Accessibility is separately required for AX caret/text access; validate actual active-filter TCC behavior on-device | Normally pass-through; during activation handoff consume only Arrow, Command-C, and Escape as bounded semantic commands. Never retain raw events or characters. Capture source/caret before making the overlay key; handle all later commands locally. |
 
-## Drag rectangle behavior
+## Shared keyboard and mouse boundary behavior
 
-The overlay view should store the anchor and current point in its local
-coordinate space and normalize on every update.
+The overlay stores an immutable anchor boundary and movable focus boundary. A
+keyboard arrow moves one grid boundary or visual row. Mouse points snap to the
+same boundaries, so dragging exactly one character width selects one column.
+Normalization when focus crosses anchor is identical for both paths.
 
 ```swift
 struct SelectionRect {
@@ -190,13 +213,13 @@ final class SelectionOverlayView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         current = convert(event.locationInWindow, from: nil)
-        confirmSelection()
+        freezeSelection()
     }
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53: cancelSelection()  // Escape
-        case 36: confirmSelection() // Return
+        case 8 where event.modifierFlags.contains(.command): copySelection() // Command-C
         default: super.keyDown(with: event)
         }
     }
@@ -213,18 +236,21 @@ enough for the spike:
 | Selection border | 1-2 point high-contrast stroke. |
 | Handles | Out of MVP unless post-drag adjustment is included. |
 
-## Cancel and confirm
+## Freeze, copy, and cancel
 
 MVP behavior:
 
 | Command | Trigger | Result |
 |---|---|---|
 | Cancel | Escape, secondary click, or explicit cancel button if later added | Close all overlay panels and return `nil`. |
-| Confirm | Mouse up after a non-empty drag | Close all overlay panels and return `SelectionRect`. |
-| Empty drag | Mouse up with width/height below threshold | Treat as cancel or keep waiting; document the chosen threshold. |
+| Freeze | Shift release after keyboard adjustment, or mouse up after a drag | Keep the zero- or nonzero-width selection visible; do not mutate the clipboard. |
+| Copy | Command-C while a nonzero-width selection is frozen | Return `SelectionRect` to extraction/copy and close after success or terminal failure. |
+| Empty width | Command-C while the frozen column range is empty | Consume the command, retain the caret/multi-cursor overlay, leave the clipboard unchanged, and show actionable status. |
 
-Recommended threshold: at least 4 x 4 points before confirming. This prevents
-accidental clicks from becoming selections.
+Do not use a point-size threshold for production semantics. Snap to measured grid
+boundaries: one character width is exactly one selected column, and endpoint rows
+are inclusive. The historical prototype's 4-point threshold remains prototype-
+only evidence.
 
 ## Coordinate spaces
 
@@ -270,9 +296,11 @@ Recommended MVP:
 | Case | Behavior |
 |---|---|
 | Drag starts on one display | Only that display owns the active rectangle. Other overlay panels remain transparent and idle. |
+| Keyboard anchor is on one display | The caret's display owns the rectangle and is the only panel made key. |
+| Mouse down occurs on another display while armed | Transfer session/display ownership to the clicked panel before dragging; only that panel becomes key. |
 | Drag crosses display boundary | Clamp to the starting display for MVP. Cross-display selection can be a later feature. |
 | Multiple Retina scales | Keep rects in points and attach the owning screen. Convert to backing only in a later capture pipeline. |
-| Display added/removed during selection | Cancel the selection and close panels, or rebuild and ask the user to retry. |
+| Display added/removed during selection | Cancel the selection and close every panel. A retry always starts a new session with fresh display geometry. |
 | Full-screen app on another display | `canJoinAllSpaces` plus `fullScreenAuxiliary` should be tested. If `.statusBar` does not appear, test `.screenSaver` as a temporary fallback. |
 | Separate Spaces enabled | Check `NSScreen.screensHaveSeparateSpaces` during diagnostics; behavior can differ when displays have independent Spaces. |
 
@@ -300,19 +328,23 @@ Desired behavior: selection mode is visually modal but not app-activating.
 
 Practical approach:
 
-1. Record the previously active app/window only if needed for diagnostics; do
-   not attempt to manipulate other apps.
+1. Retain the captured source identity only in session memory; do not log process,
+   bundle, window, caret, rectangle, or text data and do not manipulate other apps.
 2. Show non-activating panels with `orderFrontRegardless()`.
-3. Make the overlay panel key and set the overlay view as first responder for
-   Escape/Return; keep a local key monitor as a fallback if prototype testing
-   shows the non-activating panel does not receive key events consistently.
-4. Close panels immediately on cancel/confirm.
+3. Use the event-tap transition guard to protect immediate Grid commands after
+   double-Shift. Capture an immutable
+   source process/window/element context and caret before making exactly one
+   owning-display overlay panel key and first responder.
+4. Keep a frozen selection visible until Escape, successful Command-C copy, or a
+   terminal failure closes the panels.
 5. Do not call `NSApp.activate(ignoringOtherApps:)` in the default MVP path.
 
-Known tradeoff: a non-activating overlay that receives mouse events will still
-intercept clicks while the selection session is active. That is acceptable for a
-drag-selection mode. After confirmation, close the panel rather than leaving a
-click-through overlay alive.
+Known tradeoff: a non-activating overlay that receives mouse events intercepts
+clicks while selection mode is active. The frozen overlay remains input-owning
+and must not become click-through. If its panel is no longer key or the intended
+view is no longer first responder, cancel immediately so Command-C cannot leak to
+the source app. Matched Grid commands are consumed through AppKit routing
+(`performKeyEquivalent` where appropriate); a global monitor is not a fallback.
 
 ## Permissions
 
@@ -326,16 +358,16 @@ Permission boundaries:
 |---|---|---|
 | Transparent overlay window | No special TCC permission expected | In scope |
 | Local mouse drag inside overlay | No special TCC permission expected | In scope |
-| Local Escape/Return while overlay is key | No special TCC permission expected | In scope |
-| Global keyboard monitoring while another app remains focused | Accessibility trust for `NSEvent` key monitoring; Input Monitoring may apply to lower-level event taps | Out of MVP |
+| Local Shift+Arrow, Command-C, and Escape while overlay is key | No extra TCC permission beyond the activation/text capabilities | In scope |
+| Double-Shift monitoring plus bounded activation guard while another app remains focused | Active `CGEventTap`; Input Monitoring is the documented monitoring gate, Accessibility is separately needed for AX, and active-filter TCC behavior must be verified; only Arrow, Command-C, and Escape may be consumed during handoff | In scope |
 | Reading screen pixels with ScreenCaptureKit | Screen Recording permission | Out of MVP |
-| Inspecting another app's UI via AX APIs | Accessibility trust | Out of MVP |
+| Inspecting another app's caret/text geometry via AX APIs | Accessibility trust | In scope through #14 |
 
 If a later version needs screenshot/OCR, handle Screen Recording permission in a
 separate capture spike so the overlay UX does not inherit unnecessary privacy
 friction.
 
-## MVP prototype checklist
+## Historical prototype checklist
 
 This PR includes a minimal prototype at
 `spikes/macos-overlay/overlay-rectangle-prototype.swift`. It is intentionally a
@@ -367,7 +399,7 @@ Prototype options:
 | Option | Purpose |
 |---|---|
 | `--level=floating\|statusBar\|screenSaver` | Tests the overlay at a specific AppKit window level. Default is `statusBar`. |
-| `--min-size=<points>` | Changes the minimum width and height required before mouse-up confirms. Default is 4 points. |
+| `--min-size=<points>` | Changes the historical prototype's minimum width and height before mouse-up returns a rectangle. Production freezes instead of copying. |
 | `--diagnostics` | Prints display IDs, screen frames, visible frames, backing scale factors, and `screensHaveSeparateSpaces`, then exits without showing overlays. |
 | `--auto-cancel-after=<seconds>` | Shows the overlay session and cancels automatically after the given delay. This is useful for a non-interactive smoke test that proves the AppKit session can start and close. |
 
@@ -377,18 +409,33 @@ for `keyDown`, and installs a local key monitor fallback for Escape. It clamps
 drag points to the starting screen's overlay view bounds so the MVP behavior
 stays single-display even if the pointer crosses a display boundary.
 
-Manual validation should cover:
+Historical prototype manual validation covers only implemented behavior:
 
 | Scenario | Expected result |
 |---|---|
 | Terminal/editor/browser normal window | Overlay appears above the target and drag updates the rectangle smoothly. |
 | First click immediately after the overlay appears | The very first mouse down starts the drag; it is not consumed by window/key activation. |
 | Escape during drag | Overlay closes with no selection. |
-| Mouse-up confirm | Overlay closes and returns a non-empty rect in screen points. |
+| Mouse-up confirm | The prototype closes and prints the non-empty rectangle. This is not production freeze/copy evidence. |
 | External display | Overlay appears on every display; selection is associated with the display where the drag began. |
 | Retina display | Rect size and drawn border remain stable in points; no manual pixel scaling is needed. |
 | Full-screen app | `.statusBar` plus collection behavior is tested; fallback level is documented if needed. |
 | App focus | Underlying app should remain the user's apparent context; GridSelect should not become visibly activated. |
+
+### Production implementation validation checklist
+
+Run this checklist only against the production implementation, not the historical
+prototype:
+
+| Scenario | Expected result |
+|---|---|
+| Double-Shift handoff | The approved activation-to-ready contract is visible and immediate Grid input follows that contract without reaching the source app. |
+| Keyboard zero-width start | Caret/multi-cursor affordance begins at zero width; Shift release freezes it. |
+| Keyboard boundary movement | Right once selects one column; Up/Down spans adjacent rows while preserving width; anchor crossing and repeat match fixtures. |
+| Mouse boundary movement | One character-width drag selects one column; row and midpoint snapping match pure fixtures. |
+| Frozen ownership | Overlay remains key/first responder and not click-through; zero-width first mouse down can re-anchor. |
+| Command-C | Zero width leaves clipboard unchanged; nonzero width starts one copy and consumes repeats without source-app copy. |
+| Terminal cleanup | Escape, result, permission loss, listener disablement, source/responder mismatch, and display invalidation close all session resources once. |
 
 ## Prototype validation status
 
@@ -443,10 +490,10 @@ validation of rectangle drawing, pointer interaction, or window stacking.
 |---|---|
 | `.statusBar` may not appear over every full-screen Space. | Test `.screenSaver` as a session-only fallback and document exact OS behavior. |
 | The first click on a non-activating panel can be consumed by activation instead of starting the drag. | Override `acceptsFirstMouse(for:)` in the overlay view and verify the first-drag scenario in the prototype checklist. |
-| Non-activating keyboard handling can be inconsistent. | Use mouse-up confirm for MVP; add local monitor; consider explicit UI affordance before global monitoring. |
+| Modifier event ordering and key repeat can vary. | Keep double-Shift recognition and local keyboard adjustment as pure state machines with timing/repeat tests. |
 | Stage Manager/Spaces behavior varies by system settings. | Include `screensHaveSeparateSpaces`, full-screen, and Stage Manager states in manual test notes. |
 | Future screenshot/OCR needs pixel-perfect conversion. | Keep this spike point-based and defer backing conversion to capture implementation. |
-| Very high overlay levels can obscure system UI. | Use the least powerful level that passes tests and close panels immediately after selection. |
+| Very high overlay levels can obscure system UI. | Use the least powerful level that passes tests and close panels at cancel or the copy terminal result. |
 
 ## Final MVP approach
 
@@ -456,11 +503,18 @@ Implement a short-lived `SelectionOverlaySession` that:
 2. Uses `.statusBar` level by default with `.canJoinAllSpaces` and
    `.fullScreenAuxiliary`.
 3. Captures drag events locally in the overlay view.
-4. Confirms on mouse up when the normalized rectangle exceeds a small threshold.
-5. Cancels on Escape or invalid display changes.
-6. Returns a `SelectionRect` in AppKit screen-space points (bottom-left origin)
+4. Accepts a keyboard caret anchor plus Shift+Arrow adjustments or a first-click
+   mouse anchor plus drag adjustments.
+5. Freezes on Shift/mouse release and remains visible without copying.
+6. Returns the frozen rectangle only on Command-C; cancels on Escape or invalid
+   display changes.
+7. Returns a `SelectionRect` in AppKit screen-space points (bottom-left origin)
    plus the owning display ID, per the coordinate contract to be fixed in #9.
-7. Closes all overlay panels before any future capture/OCR step begins.
+8. Verifies key window/first responder, source identity, permission state, and
+   session generation before accepting input or publishing a copy result.
+9. Closes every panel, event/local monitor, run-loop source, and session buffer
+   through one idempotent cleanup path after cancel, terminal result, permission
+   loss, listener disablement, display invalidation, or responder loss.
 
 This keeps the issue #7 spike focused on macOS overlay behavior and leaves OCR,
 screenshot capture, and app-specific optimizations for later work.
