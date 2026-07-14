@@ -90,9 +90,11 @@ public struct VisualLine: Equatable, Sendable {
 
 public struct GridMappingPolicy: Equatable, Sendable {
     public let tabStop: Int?
+    public let maximumOutputCells: Int
 
-    public init(tabStop: Int? = nil) {
+    public init(tabStop: Int? = nil, maximumOutputCells: Int = 100_000) {
         self.tabStop = tabStop.flatMap { $0 > 0 ? $0 : nil }
+        self.maximumOutputCells = max(1, maximumOutputCells)
     }
 }
 
@@ -110,6 +112,7 @@ public enum GridMappingUnsupportedReason: Error, Equatable, Sendable {
     case tabStopUnknown
     case variableWidthContent
     case combiningCharacterContent
+    case selectionTooLarge
 }
 
 public struct GridSelectedRow: Equatable, Sendable {
@@ -182,6 +185,14 @@ public struct CoordinateGridMapper: Equatable, Sendable {
             return .unsupported(.displayMismatch)
         }
         guard let canonical = display.canonicalRectangle(for: selection),
+              canonical.minX.isFinite,
+              canonical.minY.isFinite,
+              canonical.maxX.isFinite,
+              canonical.maxY.isFinite,
+              grid.originX.isFinite,
+              grid.originY.isFinite,
+              grid.characterWidth.isFinite,
+              grid.lineHeight.isFinite,
               grid.characterWidth > 0,
               grid.lineHeight > 0
         else {
@@ -199,27 +210,36 @@ public struct CoordinateGridMapper: Equatable, Sendable {
             return .empty
         }
 
-        let rowStart = Self.clamp(
-            Int(floor((canonical.minY - grid.originY) / grid.lineHeight)),
-            lower: 0,
+        let rowStart = Self.boundedFloor(
+            (canonical.minY - grid.originY) / grid.lineHeight,
             upper: visualLines.count
         )
-        let rowEnd = Self.clamp(
-            Self.boundaryCeil((canonical.maxY - grid.originY) / grid.lineHeight),
-            lower: rowStart,
-            upper: visualLines.count
+        let rowEnd = max(
+            rowStart,
+            Self.boundedCeil(
+                (canonical.maxY - grid.originY) / grid.lineHeight,
+                upper: visualLines.count
+            )
         )
-        let columnStart = max(
-            0,
-            Int(floor((canonical.minX - grid.originX) / grid.characterWidth))
-        )
-        let columnEnd = max(
-            columnStart,
-            Self.boundaryCeil((canonical.maxX - grid.originX) / grid.characterWidth)
-        )
+        guard let columnStart = Self.nonnegativeFloor(
+            (canonical.minX - grid.originX) / grid.characterWidth
+        ),
+        let requestedColumnEnd = Self.nonnegativeCeil(
+            (canonical.maxX - grid.originX) / grid.characterWidth
+        ) else {
+            return .unsupported(.selectionTooLarge)
+        }
+        let columnEnd = max(columnStart, requestedColumnEnd)
 
         guard rowStart < rowEnd, columnStart < columnEnd else {
             return .empty
+        }
+        let width = columnEnd - columnStart
+        let rowCount = rowEnd - rowStart
+        guard width <= policy.maximumOutputCells,
+              rowCount <= policy.maximumOutputCells / width
+        else {
+            return .unsupported(.selectionTooLarge)
         }
 
         var diagnostics: [GridMappingDiagnostic] = []
@@ -234,19 +254,21 @@ public struct CoordinateGridMapper: Equatable, Sendable {
         for rowIndex in rowStart..<rowEnd {
             let line = visualLines[rowIndex]
             let normalized: NormalizedLine
-            switch Self.normalize(line.text, policy: policy) {
+            switch Self.normalize(
+                line.text,
+                selecting: columnStart..<columnEnd,
+                policy: policy
+            ) {
             case let .success(value):
                 normalized = value
             case let .failure(reason):
                 return .unsupported(reason)
             }
 
-            let width = columnEnd - columnStart
-            let available = max(0, normalized.cells.count - columnStart)
-            let copiedCount = min(width, available)
+            let copiedCount = normalized.cells.count
             let missingCount = width - copiedCount
             let copied = copiedCount > 0
-                ? String(normalized.cells[columnStart..<(columnStart + copiedCount)])
+                ? String(normalized.cells)
                 : ""
             let gridText = copied + String(repeating: " ", count: missingCount)
 
@@ -260,11 +282,8 @@ public struct CoordinateGridMapper: Equatable, Sendable {
                     diagnostics.append(.rightPadded)
                 }
             }
-            for diagnostic in normalized.diagnostics where !diagnostics.contains(diagnostic) {
+            for diagnostic in rowDiagnostics where !diagnostics.contains(diagnostic) {
                 diagnostics.append(diagnostic)
-            }
-            if line.isSoftWrapped, !diagnostics.contains(.softWrappedVisualRow) {
-                diagnostics.append(.softWrappedVisualRow)
             }
 
             selectedRows.append(
@@ -296,31 +315,51 @@ public struct CoordinateGridMapper: Equatable, Sendable {
 
     private static func normalize(
         _ text: String,
+        selecting columns: Range<Int>,
         policy: GridMappingPolicy
     ) -> Result<NormalizedLine, GridMappingUnsupportedReason> {
-        if text.rangeOfCharacter(from: .nonBaseCharacters) != nil {
-            return .failure(.combiningCharacterContent)
-        }
-
         var cells: [Character] = []
         var diagnostics: [GridMappingDiagnostic] = []
+        var logicalColumn = 0
         for character in text {
+            if logicalColumn >= columns.upperBound {
+                break
+            }
+            if character.unicodeScalars.contains(where: {
+                CharacterSet.nonBaseCharacters.contains($0)
+            }) {
+                return .failure(.combiningCharacterContent)
+            }
             if character == "\t" {
                 guard let tabStop = policy.tabStop else {
                     return .failure(.tabStopUnknown)
                 }
-                let spaces = tabStop - (cells.count % tabStop)
-                cells.append(contentsOf: repeatElement(" ", count: spaces))
+                let spacesToNextStop = tabStop - (logicalColumn % tabStop)
+                let consumedColumns = min(
+                    spacesToNextStop,
+                    columns.upperBound - logicalColumn
+                )
+                let tabEnd = logicalColumn + consumedColumns
+                let selectedStart = max(logicalColumn, columns.lowerBound)
+                if selectedStart < tabEnd {
+                    cells.append(
+                        contentsOf: repeatElement(" ", count: tabEnd - selectedStart)
+                    )
+                }
                 if !diagnostics.contains(.tabExpanded) {
                     diagnostics.append(.tabExpanded)
                 }
+                logicalColumn = tabEnd
                 continue
             }
 
             guard character.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value <= 0x7e }) else {
                 return .failure(.variableWidthContent)
             }
-            cells.append(character)
+            if logicalColumn >= columns.lowerBound {
+                cells.append(character)
+            }
+            logicalColumn += 1
         }
 
         return .success(NormalizedLine(cells: cells, diagnostics: diagnostics))
@@ -334,7 +373,51 @@ public struct CoordinateGridMapper: Equatable, Sendable {
         return Int(ceil(value))
     }
 
-    private static func clamp(_ value: Int, lower: Int, upper: Int) -> Int {
-        min(max(value, lower), upper)
+    private static func boundaryFloor(_ value: Double) -> Int {
+        let nearest = value.rounded()
+        if abs(value - nearest) <= boundaryEpsilon {
+            return Int(nearest)
+        }
+        return Int(floor(value))
+    }
+
+    private static func boundedFloor(_ value: Double, upper: Int) -> Int {
+        if value <= 0 {
+            return 0
+        }
+        if value >= Double(upper) {
+            return upper
+        }
+        return boundaryFloor(value)
+    }
+
+    private static func boundedCeil(_ value: Double, upper: Int) -> Int {
+        if value <= 0 {
+            return 0
+        }
+        if value >= Double(upper) {
+            return upper
+        }
+        return boundaryCeil(value)
+    }
+
+    private static func nonnegativeFloor(_ value: Double) -> Int? {
+        if value <= 0 {
+            return 0
+        }
+        guard value.isFinite, value < Double(Int.max) else {
+            return nil
+        }
+        return boundaryFloor(value)
+    }
+
+    private static func nonnegativeCeil(_ value: Double) -> Int? {
+        if value <= 0 {
+            return 0
+        }
+        guard value.isFinite, value < Double(Int.max) else {
+            return nil
+        }
+        return boundaryCeil(value)
     }
 }

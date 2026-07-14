@@ -142,6 +142,113 @@ final class CoordinateGridMapperTests: XCTestCase {
         )
     }
 
+    func testUnsupportedContentAfterSelectedColumnsIsIgnored() throws {
+        let result = mapper.map(
+            selection: selection(canonicalX: 100, y: 50, width: 20, height: 20),
+            display: display,
+            grid: grid,
+            visualLines: [VisualLine(text: "ab🙂")]
+        )
+
+        try XCTAssertEqual(try selection(from: result).plainText, "ab")
+    }
+
+    func testStartBoundariesSnapWithinFloatingPointEpsilon() throws {
+        let result = mapper.map(
+            selection: selection(
+                canonicalX: 120 - 0.000000001,
+                y: 70 - 0.000000001,
+                width: 20.000000001,
+                height: 20.000000001
+            ),
+            display: display,
+            grid: grid,
+            visualLines: lines
+        )
+        let mapped = try selection(from: result)
+
+        XCTAssertEqual(mapped.rowRange, 1..<2)
+        XCTAssertEqual(mapped.columnRange, 2..<4)
+    }
+
+    func testOversizedRequestedGridIsRejectedBeforePadding() {
+        let result = mapper.map(
+            selection: selection(canonicalX: 100, y: 50, width: 40, height: 20),
+            display: display,
+            grid: TextGridGeometry(
+                originX: 100,
+                originY: 50,
+                characterWidth: 0.0001,
+                lineHeight: 20
+            ),
+            visualLines: [VisualLine(text: "a")]
+        )
+
+        XCTAssertEqual(result, .unsupported(.selectionTooLarge))
+    }
+
+    func testNonFiniteGeometryIsRejectedWithoutIntegerConversion() {
+        let result = mapper.map(
+            selection: selection(canonicalX: 100, y: 50, width: .infinity, height: 20),
+            display: display,
+            grid: grid,
+            visualLines: lines
+        )
+
+        XCTAssertEqual(result, .unsupported(.invalidGeometry))
+    }
+
+    func testExtremeFiniteCoordinatesAreRejectedWithoutIntegerConversion() {
+        let result = mapper.map(
+            selection: selection(
+                canonicalX: 100,
+                y: 50,
+                width: .greatestFiniteMagnitude,
+                height: 20
+            ),
+            display: display,
+            grid: grid,
+            visualLines: lines
+        )
+
+        XCTAssertEqual(result, .unsupported(.selectionTooLarge))
+    }
+
+    func testHugeTabStopOnlyExpandsThroughSelectedColumns() throws {
+        let result = mapper.map(
+            selection: selection(canonicalX: 100, y: 50, width: 10, height: 20),
+            display: display,
+            grid: grid,
+            visualLines: [VisualLine(text: "\t")],
+            policy: GridMappingPolicy(tabStop: .max)
+        )
+
+        let mapped = try selection(from: result)
+        XCTAssertEqual(mapped.plainText, " ")
+        XCTAssertTrue(mapped.diagnostics.contains(.tabExpanded))
+    }
+
+    func testFarRightSelectionDoesNotMaterializeTabPrefix() throws {
+        let selectedColumn = 1_000_000_000
+        let result = mapper.map(
+            selection: selection(
+                canonicalX: 100 + (Double(selectedColumn) * 10),
+                y: 50,
+                width: 10,
+                height: 20
+            ),
+            display: display,
+            grid: grid,
+            visualLines: [VisualLine(text: "\t")],
+            policy: GridMappingPolicy(tabStop: .max)
+        )
+
+        let mapped = try selection(from: result)
+        XCTAssertEqual(mapped.columnRange, selectedColumn..<(selectedColumn + 1))
+        XCTAssertEqual(mapped.plainText, " ")
+        XCTAssertTrue(mapped.diagnostics.contains(.tabExpanded))
+    }
+
     func testSoftWrappedRowsRemainIndependentVisualRows() throws {
         let result = mapper.map(
             selection: selection(canonicalX: 120, y: 70, width: 30, height: 20),

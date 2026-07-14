@@ -35,6 +35,24 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         XCTAssertEqual(client.boundsReadCount, 0)
     }
 
+    func testCanonicalSecureSubroleStopsBeforeTextCalls() {
+        let client = FakeAccessibilityClient()
+        let hit = client.addElement(
+            "hit",
+            pid: 10,
+            role: "AXTextField",
+            subrole: kAXSecureTextFieldSubrole as String
+        )
+        client.configureMonospace(hit, lines: ["secret"])
+        client.hitTested = hit
+
+        XCTAssertThrowsError(try engine(client).extract(rectangle: selection, display: display)) {
+            XCTAssertEqual($0 as? MacOSAccessibilityExtractionError, .secureTextElement)
+        }
+        XCTAssertEqual(client.textReadCount, 0)
+        XCTAssertEqual(client.boundsReadCount, 0)
+    }
+
     func testHitTestedTargetWinsOverFocusedElementFromDifferentPID() throws {
         let client = FakeAccessibilityClient()
         let hit = client.addElement("hit", pid: 10)
@@ -83,6 +101,106 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
 
         XCTAssertEqual(output, "ance")
         XCTAssertGreaterThan(client.textReadsByElement["parent", default: 0], 0)
+    }
+
+    func testMissingAncestorPIDStopsWalkWithoutDiscardingLeaf() throws {
+        let client = FakeAccessibilityClient()
+        let leaf = client.addElement("leaf", pid: 10)
+        let parent = client.addElement("parent", pid: 10)
+        client.setParent(parent, for: leaf)
+        client.configureMonospace(leaf, lines: ["leaf text"])
+        client.pidUnavailableIDs.insert("parent")
+        client.hitTested = leaf
+
+        try XCTAssertEqual(
+            try engine(client).extract(rectangle: selection, display: display),
+            "leaf"
+        )
+    }
+
+    func testSecureAncestorWithMissingPIDStillRejectsBeforeTextCalls() {
+        let client = FakeAccessibilityClient()
+        let leaf = client.addElement("leaf", pid: 10)
+        let parent = client.addElement(
+            "parent",
+            pid: 10,
+            role: "AXTextField",
+            subrole: kAXSecureTextFieldSubrole as String
+        )
+        client.setParent(parent, for: leaf)
+        client.configureMonospace(leaf, lines: ["secret"])
+        client.pidUnavailableIDs.insert("parent")
+        client.hitTested = leaf
+
+        XCTAssertThrowsError(try engine(client).extract(rectangle: selection, display: display)) {
+            XCTAssertEqual($0 as? MacOSAccessibilityExtractionError, .secureTextElement)
+        }
+        XCTAssertEqual(client.textReadCount, 0)
+        XCTAssertEqual(client.boundsReadCount, 0)
+    }
+
+    func testVisibleRangeStartingMidLineKeepsPartialFirstLine() throws {
+        let client = FakeAccessibilityClient()
+        let hit = client.addElement("hit", pid: 10)
+        client.configureMonospace(hit, lines: ["abcdef"])
+        client.elements["hit"]?.visibleRange = CFRange(location: 2, length: 3)
+        client.hitTested = hit
+        let partialSelection = SelectionRectangle(
+            displayID: 1,
+            x: 120,
+            y: 930,
+            width: 30,
+            height: 20
+        )
+
+        try XCTAssertEqual(
+            try engine(client).extract(rectangle: partialSelection, display: display),
+            "cde"
+        )
+    }
+
+    func testVisibleRangeStartingMidLineAlignsFollowingRows() throws {
+        let client = FakeAccessibilityClient()
+        let hit = client.addElement("hit", pid: 10)
+        client.configureMonospace(hit, lines: ["abcdef", "uvwxyz"])
+        client.elements["hit"]?.visibleRange = CFRange(location: 2, length: 11)
+        client.hitTested = hit
+        let twoRowSelection = SelectionRectangle(
+            displayID: 1,
+            x: 120,
+            y: 910,
+            width: 30,
+            height: 40
+        )
+
+        try XCTAssertEqual(
+            try engine(client).extract(rectangle: twoRowSelection, display: display),
+            "cde\nwxy"
+        )
+        let prefixSelection = SelectionRectangle(
+            displayID: 1,
+            x: 100,
+            y: 910,
+            width: 20,
+            height: 40
+        )
+        try XCTAssertEqual(
+            try engine(client).extract(rectangle: prefixSelection, display: display),
+            "  \nuv"
+        )
+    }
+
+    func testWholeLineBoundsProvideCharacterWidthFallback() throws {
+        let client = FakeAccessibilityClient()
+        let hit = client.addElement("hit", pid: 10)
+        client.configureMonospace(hit, lines: ["abcdef"])
+        client.supportsSingleCharacterBounds = false
+        client.hitTested = hit
+
+        try XCTAssertEqual(
+            try engine(client).extract(rectangle: selection, display: display),
+            "abcd"
+        )
     }
 
     func testMultipleGlyphSamplesRejectProportionalText() {
@@ -227,6 +345,8 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
     var forcedLineNumbers: (first: Int, last: Int)?
     var forcedString: String?
     var parameterizedNamesBarrier: (entered: DispatchSemaphore, release: DispatchSemaphore)?
+    var pidUnavailableIDs: Set<String> = []
+    var supportsSingleCharacterBounds = true
     private(set) var textReadCount = 0
     private(set) var boundsReadCount = 0
     private(set) var textReadsByElement: [String: Int] = [:]
@@ -316,7 +436,10 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
         id(lhs) == id(rhs)
     }
 
-    func pid(of element: AccessibilityElementHandle) -> pid_t? { elements[id(element)]?.pid }
+    func pid(of element: AccessibilityElementHandle) -> pid_t? {
+        let identifier = id(element)
+        return pidUnavailableIDs.contains(identifier) ? nil : elements[identifier]?.pid
+    }
     func frame(of element: AccessibilityElementHandle) -> CGRect? { elements[id(element)]?.frame }
     func role(of element: AccessibilityElementHandle) -> String? { elements[id(element)]?.role }
     func subrole(of element: AccessibilityElementHandle) -> String? { elements[id(element)]?.subrole }
@@ -360,13 +483,25 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
         let identifier = id(element)
         textReadCount += 1
         textReadsByElement[identifier, default: 0] += 1
-        return forcedString ?? elements[identifier]?.lines.first(where: {
-            $0.range.location == range.location && $0.range.length == range.length
-        })?.rawText
+        if let forcedString {
+            return forcedString
+        }
+        guard let line = elements[identifier]?.lines.first(where: {
+            range.location >= $0.range.location
+                && range.location + range.length <= $0.range.location + $0.range.length
+        }) else {
+            return nil
+        }
+        let start = range.location - line.range.location
+        let units = Array(line.rawText.utf16)
+        return String(decoding: units[start..<(start + range.length)], as: UTF16.self)
     }
 
     func bounds(for range: CFRange, in element: AccessibilityElementHandle) -> CGRect? {
         boundsReadCount += 1
+        if range.length == 1, !supportsSingleCharacterBounds {
+            return nil
+        }
         guard let data = elements[id(element)],
               let line = data.lines.first(where: {
                   range.location >= $0.range.location
@@ -375,16 +510,23 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
         else {
             return nil
         }
-        if range.length == 1 {
-            let offset = range.location - line.range.location
-            let codeUnits = Array(line.rawText.utf16)
-            guard codeUnits.indices.contains(offset) else {
-                return nil
-            }
-            let width = data.characterWidths[codeUnits[offset]] ?? 10
-            return CGRect(x: line.bounds.minX, y: line.bounds.minY, width: width, height: line.bounds.height)
+        let offset = range.location - line.range.location
+        let codeUnits = Array(line.rawText.utf16)
+        guard offset >= 0, offset + range.length <= codeUnits.count else {
+            return nil
         }
-        return line.bounds
+        let prefixWidth = codeUnits[..<offset].reduce(0.0) {
+            $0 + (data.characterWidths[$1] ?? 10)
+        }
+        let width = codeUnits[offset..<(offset + range.length)].reduce(0.0) {
+            $0 + (data.characterWidths[$1] ?? 10)
+        }
+        return CGRect(
+            x: line.bounds.minX + prefixWidth,
+            y: line.bounds.minY,
+            width: width,
+            height: line.bounds.height
+        )
     }
 
     private func id(_ element: AccessibilityElementHandle) -> String {

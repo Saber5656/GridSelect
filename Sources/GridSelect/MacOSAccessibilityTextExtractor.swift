@@ -251,6 +251,7 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
         let sourceRange: CFRange
         let bounds: CGRect
         let characterWidths: [Double]
+        let leadingCellOffset: Int
     }
 
     private func checkedPID(
@@ -270,18 +271,21 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
         budget: ExtractionBudget
     ) throws -> [AccessibilityElementHandle] {
         var chain: [AccessibilityElementHandle] = []
+        var visited: [AccessibilityElementHandle] = []
         var current: AccessibilityElementHandle? = element
+        var canCollectCandidates = true
 
         while let candidate = current {
             try budget.check()
-            guard try checkedPID(of: candidate, budget: budget) == requiredPID else {
+            let candidatePID = client.pid(of: candidate)
+            if let candidatePID, candidatePID != requiredPID {
                 break
             }
             client.setMessagingTimeout(limits.perMessageTimeout, for: candidate)
-            guard chain.count < limits.maximumCandidates else {
+            guard visited.count < limits.maximumCandidates else {
                 throw MacOSAccessibilityExtractionError.resourceLimitExceeded
             }
-            chain.append(candidate)
+            visited.append(candidate)
 
             if try isSecure(candidate, budget: budget) {
                 // A secure ancestor protects its complete descendant chain. Reject
@@ -289,9 +293,17 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
                 throw MacOSAccessibilityExtractionError.secureTextElement
             }
 
+            if candidatePID == requiredPID, canCollectCandidates {
+                chain.append(candidate)
+            } else {
+                // Continue only to prove that skipped ancestors are not secure.
+                // Elements across an unresolved PID boundary are never text candidates.
+                canCollectCandidates = false
+            }
+
             try budget.check()
             guard let parent = client.parent(of: candidate),
-                  !chain.contains(where: { client.isSameElement($0, parent) })
+                  !visited.contains(where: { client.isSameElement($0, parent) })
             else {
                 break
             }
@@ -330,6 +342,9 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
         let role = client.role(of: element) ?? ""
         try budget.check()
         let subrole = client.subrole(of: element) ?? ""
+        if subrole == (kAXSecureTextFieldSubrole as String) {
+            return true
+        }
         return [role, subrole].contains(where: {
             let value = $0.lowercased()
             return value.contains("secure") && value.contains("text")
@@ -385,7 +400,6 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             guard let rawRange = client.range(forLine: lineNumber, in: element),
                   try validated(rawRange),
                   let lineRange = try intersection(rawRange, visible),
-                  lineRange.location == rawRange.location,
                   lineRange.length > 0
             else {
                 continue
@@ -409,6 +423,10 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             let text = removingLineTerminator(from: rawText)
             let contentLength = min(lineRange.length, text.utf16.count)
             let contentRange = CFRange(location: lineRange.location, length: contentLength)
+            let leadingCellOffset = lineRange.location - rawRange.location
+            guard leadingCellOffset <= limits.maximumVisibleCharacters else {
+                throw MacOSAccessibilityExtractionError.resourceLimitExceeded
+            }
             try budget.check()
             let contentBounds = contentLength > 0
                 ? client.bounds(for: contentRange, in: element)
@@ -432,7 +450,8 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
                     text: text,
                     sourceRange: contentRange,
                     bounds: bounds,
-                    characterWidths: widths
+                    characterWidths: widths,
+                    leadingCellOffset: leadingCellOffset
                 )
             )
         }
@@ -442,7 +461,16 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             throw MacOSAccessibilityExtractionError.lineGeometryUnavailable
         }
 
-        let characterWidths = measured.flatMap(\.characterWidths).filter { $0 > 0 }
+        let measuredCharacterWidths = measured.flatMap(\.characterWidths).filter { $0 > 0 }
+        let characterWidths = measuredCharacterWidths.isEmpty
+            ? measured.compactMap { line -> Double? in
+                let cellCount = line.text.utf16.count
+                guard cellCount > 0, line.bounds.width > 0 else {
+                    return nil
+                }
+                return line.bounds.width / Double(cellCount)
+            }
+            : measuredCharacterWidths
         guard let characterWidth = stableMedian(characterWidths, relativeTolerance: 0.15) else {
             throw MacOSAccessibilityExtractionError.unstableGeometry
         }
@@ -459,7 +487,9 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             throw MacOSAccessibilityExtractionError.unstableGeometry
         }
 
-        let leftEdges = measured.map { Double($0.bounds.minX) }
+        let leftEdges = measured.map {
+            Double($0.bounds.minX) - (Double($0.leadingCellOffset) * characterWidth)
+        }
         guard let minimumX = leftEdges.min(),
               (leftEdges.max() ?? minimumX) - minimumX <= max(2, characterWidth * 0.25)
         else {
@@ -473,14 +503,34 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
                 characterWidth: characterWidth,
                 lineHeight: lineHeight
             ),
-            lines: measured.map {
-                VisualLine(
-                    text: $0.text,
-                    sourceLocation: $0.sourceRange.location,
-                    sourceLength: $0.sourceRange.length
-                )
-            }
+            lines: try alignedVisualLines(from: measured, budget: budget)
         )
+    }
+
+    private func alignedVisualLines(
+        from measured: [MeasuredLine],
+        budget: ExtractionBudget
+    ) throws -> [VisualLine] {
+        var totalCellCount = 0
+        return try measured.map { line in
+            try budget.check()
+            let (lineCellCount, lineOverflow) = line.leadingCellOffset
+                .addingReportingOverflow(line.text.utf16.count)
+            let (nextTotal, totalOverflow) = totalCellCount
+                .addingReportingOverflow(lineCellCount)
+            guard !lineOverflow,
+                  !totalOverflow,
+                  nextTotal <= limits.maximumVisibleCharacters
+            else {
+                throw MacOSAccessibilityExtractionError.resourceLimitExceeded
+            }
+            totalCellCount = nextTotal
+            return VisualLine(
+                text: String(repeating: " ", count: line.leadingCellOffset) + line.text,
+                sourceLocation: line.sourceRange.location,
+                sourceLength: line.sourceRange.length
+            )
+        }
     }
 
     private func visibleCharacterRange(
