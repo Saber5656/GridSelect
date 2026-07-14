@@ -1804,11 +1804,11 @@ private actor ControlledAuthorizationExtractorStub: RectangularTextExtracting {
     }
 
     func succeedAuthorization() {
-        guard let continuation else {
+        guard let pendingContinuation = continuation else {
             authorizationShouldSucceed = true
             return
         }
-        continuation.resume()
+        pendingContinuation.resume()
         continuation = nil
     }
 }
