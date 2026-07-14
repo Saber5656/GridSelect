@@ -20,6 +20,7 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
         let element: AccessibilityElementHandle
         let window: AccessibilityElementHandle
         var bindingOrigins: Set<SelectionBindingOrigin>
+        var mouseBindingLeaseCount: UInt64
     }
 
     private let client: any MacOSAccessibilityClient
@@ -146,11 +147,13 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
         }
     }
 
-    @MainActor
     func resolveMouseAnchor(
         at appKitScreenPoint: SelectionPoint,
         sourceContext: ActivationSourceContext
     ) -> MacOSGridMouseAnchorResolution {
+        guard !Task.isCancelled else {
+            return .unavailable
+        }
         guard sourceContext.sessionIdentity != nil else {
             return .rejected(.sourceContextInvalid)
         }
@@ -173,14 +176,21 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             guard !secureInputEnabled() else {
                 return .rejected(.secureInputUnsupported)
             }
+            guard !Task.isCancelled else {
+                return .unavailable
+            }
             guard client.isTrusted else {
                 return .rejected(.permissionRequired)
             }
             guard let hit = client.hitTestedElement(
                 at: canonicalPoint,
-                inProcess: pid_t(sourceContext.source.processIdentifier)
-            ),
-            let preflightWindow = client.window(of: hit),
+                inProcess: pid_t(sourceContext.source.processIdentifier),
+                messagingTimeout: limits.perMessageTimeout
+            ) else {
+                return .rejected(.sourceContextInvalid)
+            }
+            client.setMessagingTimeout(limits.perMessageTimeout, for: hit)
+            guard let preflightWindow = client.window(of: hit),
             windowValidator(
                 sourceContext.source,
                 sourceContext.sourceWindowFrame
@@ -229,6 +239,9 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             guard !secureInputEnabled() else {
                 return .rejected(.secureInputUnsupported)
             }
+            guard !Task.isCancelled else {
+                return .unavailable
+            }
             guard windowValidator(
                       sourceContext.source,
                       sourceContext.sourceWindowFrame
@@ -242,6 +255,9 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
                   )
             else {
                 return .rejected(.sourceContextInvalid)
+            }
+            guard !Task.isCancelled else {
+                return .unavailable
             }
             let identity = register(
                 candidate.element,
@@ -284,6 +300,35 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             throw SelectionSourceFailureError(.secureInputUnsupported)
         }
         return text
+    }
+
+    func discardMouseAnchor(
+        _ candidate: GridMouseAnchorCandidate,
+        sourceContext: ActivationSourceContext
+    ) {
+        lock.withLock {
+            guard let sessionIdentity = sourceContext.sessionIdentity,
+                  var entry = entries[candidate.element],
+                  entry.activation == sourceContext.activation,
+                  entry.sessionIdentity == sessionIdentity,
+                  entry.source == sourceContext.source,
+                  entry.sourceWindowFrame == sourceContext.sourceWindowFrame
+            else {
+                return
+            }
+            guard entry.mouseBindingLeaseCount > 0 else {
+                return
+            }
+            entry.mouseBindingLeaseCount -= 1
+            if entry.mouseBindingLeaseCount == 0 {
+                entry.bindingOrigins.remove(.mouseHit)
+            }
+            if entry.bindingOrigins.isEmpty {
+                entries.removeValue(forKey: candidate.element)
+            } else {
+                entries[candidate.element] = entry
+            }
+        }
     }
 
     func extractText(
@@ -448,26 +493,61 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             {
                 var entry = existing.value
                 entry.bindingOrigins.insert(bindingOrigin)
+                if bindingOrigin == .mouseHit {
+                    guard entry.mouseBindingLeaseCount < UInt64.max else {
+                        return allocateEntry(
+                            element,
+                            activation: activation,
+                            sessionIdentity: sessionIdentity,
+                            source: source,
+                            sourceWindowFrame: sourceWindowFrame,
+                            window: window,
+                            bindingOrigin: bindingOrigin
+                        )
+                    }
+                    entry.mouseBindingLeaseCount += 1
+                }
                 entries[existing.key] = entry
                 return existing.key
             }
-            nextIdentity &+= 1
-            if nextIdentity == 0 {
-                nextIdentity = 1
-            }
-            let identity = SelectionElementIdentity(rawValue: nextIdentity)
-            entries[identity] = Entry(
+            return allocateEntry(
+                element,
                 activation: activation,
-                sessionIdentity: sessionIdentity
-                    ?? SelectionSessionIdentity(rawValue: identity.rawValue),
+                sessionIdentity: sessionIdentity,
                 source: source,
                 sourceWindowFrame: sourceWindowFrame,
-                element: element,
                 window: window,
-                bindingOrigins: [bindingOrigin]
+                bindingOrigin: bindingOrigin
             )
-            return identity
         }
+    }
+
+    private func allocateEntry(
+        _ element: AccessibilityElementHandle,
+        activation: GridActivation,
+        sessionIdentity: SelectionSessionIdentity?,
+        source: SelectionSourceIdentity,
+        sourceWindowFrame: ScreenRectangle,
+        window: AccessibilityElementHandle,
+        bindingOrigin: SelectionBindingOrigin
+    ) -> SelectionElementIdentity {
+        nextIdentity &+= 1
+        if nextIdentity == 0 {
+            nextIdentity = 1
+        }
+        let identity = SelectionElementIdentity(rawValue: nextIdentity)
+        entries[identity] = Entry(
+            activation: activation,
+            sessionIdentity: sessionIdentity
+                ?? SelectionSessionIdentity(rawValue: identity.rawValue),
+            source: source,
+            sourceWindowFrame: sourceWindowFrame,
+            element: element,
+            window: window,
+            bindingOrigins: [bindingOrigin],
+            mouseBindingLeaseCount: bindingOrigin == .mouseHit ? 1 : 0
+        )
+        return identity
     }
 
     private func entry(for identity: SelectionElementIdentity) -> Entry? {
