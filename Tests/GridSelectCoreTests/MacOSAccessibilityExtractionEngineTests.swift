@@ -161,9 +161,11 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         let releasePreTextCall = DispatchSemaphore(value: 0)
         client.parameterizedNamesBarrier = (enteredPreTextCall, releasePreTextCall)
         let extractor = MacOSAccessibilityTextExtractor(client: client)
+        let selectedRectangle = selection
+        let displayGeometry = display
 
         let extraction = Task {
-            try await extractor.extractText(in: selection, display: display)
+            try await extractor.extractText(in: selectedRectangle, display: displayGeometry)
         }
         XCTAssertEqual(enteredPreTextCall.wait(timeout: .now() + 2), .success)
         extraction.cancel()
