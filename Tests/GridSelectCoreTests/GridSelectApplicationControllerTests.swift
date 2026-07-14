@@ -176,6 +176,29 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Shortcut unavailable")
     }
 
+    func testListenerDisableMarksShortcutInactive() {
+        let shortcut = ApplicationShortcutStub()
+        let controller = GridSelectApplicationController(
+            shortcut: shortcut,
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .cancelled),
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+
+        XCTAssertTrue(controller.start())
+        shortcut.triggerListenerDisabled()
+
+        XCTAssertEqual(
+            controller.statusModel.snapshot.shortcutStatus,
+            .inactive(displayName: "Double-Shift")
+        )
+        XCTAssertEqual(
+            controller.statusModel.snapshot.selectionState,
+            .failed(.listenerDisabled)
+        )
+    }
+
     private func waitForTerminalState(_ controller: GridSelectApplicationController) async {
         for _ in 0..<100 where controller.statusModel.snapshot.selectionState.isActive {
             await Task.yield()
@@ -209,6 +232,10 @@ private final class ApplicationShortcutStub: SelectionShortcutRegistering {
         nextGeneration += 1
         handler(.activated(testSourceContext(generation: nextGeneration)))
         return true
+    }
+
+    func triggerListenerDisabled() {
+        handler?(.listenerDisabled)
     }
 
     private func testSourceContext(generation: UInt64) -> ActivationSourceContext {
