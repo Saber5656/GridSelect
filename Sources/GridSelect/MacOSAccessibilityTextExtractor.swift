@@ -66,9 +66,21 @@ final class AccessibilityElementHandle: @unchecked Sendable {
 protocol MacOSAccessibilityClient: Sendable {
     var isTrusted: Bool { get }
 
-    func hitTestedElement(at point: CGPoint) -> AccessibilityElementHandle?
-    func focusedElement() -> AccessibilityElementHandle?
+    func hitTestedElement(at point: CGPoint, inProcess processIdentifier: pid_t?)
+        -> AccessibilityElementHandle?
+    func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle?
     func parent(of element: AccessibilityElementHandle) -> AccessibilityElementHandle?
+    func childCount(of element: AccessibilityElementHandle) -> Int?
+    func children(
+        of element: AccessibilityElementHandle,
+        limit: Int
+    ) -> [AccessibilityElementHandle]?
+    func window(of element: AccessibilityElementHandle) -> AccessibilityElementHandle?
+    func windowCount(inProcess processIdentifier: pid_t) -> Int?
+    func windows(
+        inProcess processIdentifier: pid_t,
+        limit: Int
+    ) -> [AccessibilityElementHandle]?
     func isSameElement(_ lhs: AccessibilityElementHandle, _ rhs: AccessibilityElementHandle) -> Bool
     func pid(of element: AccessibilityElementHandle) -> pid_t?
     func frame(of element: AccessibilityElementHandle) -> CGRect?
@@ -77,6 +89,7 @@ protocol MacOSAccessibilityClient: Sendable {
     func setMessagingTimeout(_ seconds: Float, for element: AccessibilityElementHandle)
     func parameterizedAttributeNames(of element: AccessibilityElementHandle) -> [String]
     func visibleCharacterRange(of element: AccessibilityElementHandle) -> CFRange?
+    func selectedTextRange(of element: AccessibilityElementHandle) -> CFRange?
     func numberOfCharacters(in element: AccessibilityElementHandle) -> Int?
     func line(for index: Int, in element: AccessibilityElementHandle) -> Int?
     func range(forLine line: Int, in element: AccessibilityElementHandle) -> CFRange?
@@ -141,9 +154,9 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             y: canonical.minY + (canonical.height / 2)
         )
         try budget.check()
-        let hitTested = client.hitTestedElement(at: center)
+        let hitTested = client.hitTestedElement(at: center, inProcess: nil)
         try budget.check()
-        let focused = client.focusedElement()
+        let focused = client.focusedElement(inProcess: nil)
 
         var chains: [[AccessibilityElementHandle]] = []
         var targetPID: pid_t?
@@ -239,6 +252,158 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             return ""
         }
         throw lastRecoverableError
+    }
+
+    struct BoundCandidate: @unchecked Sendable {
+        let element: AccessibilityElementHandle
+        let grid: TextGridGeometry
+        let lines: [VisualLine]
+
+        var sourceRange: Range<Int> {
+            let locations = lines.compactMap(\.sourceLocation)
+            let ends = lines.compactMap { line -> Int? in
+                guard let location = line.sourceLocation,
+                      let length = line.sourceLength
+                else {
+                    return nil
+                }
+                let (end, overflow) = location.addingReportingOverflow(length)
+                return overflow ? nil : end
+            }
+            return (locations.min() ?? 0)..<(ends.max() ?? 0)
+        }
+    }
+
+    func focusedCandidate(requiredPID: pid_t) throws -> BoundCandidate {
+        guard client.isTrusted else {
+            throw SelectionPermissionRequiredError()
+        }
+        guard let focused = client.focusedElement(inProcess: requiredPID) else {
+            throw MacOSAccessibilityExtractionError.noTextCandidate
+        }
+        return try candidate(startingAt: focused, requiredPID: requiredPID)
+    }
+
+    func hitTestedCandidate(at point: CGPoint, requiredPID: pid_t) throws -> BoundCandidate {
+        guard client.isTrusted else {
+            throw SelectionPermissionRequiredError()
+        }
+        guard let hit = client.hitTestedElement(
+            at: point,
+            inProcess: requiredPID
+        ) else {
+            throw MacOSAccessibilityExtractionError.noTextCandidate
+        }
+        return try candidate(startingAt: hit, requiredPID: requiredPID)
+    }
+
+    func selectedTextRange(of element: AccessibilityElementHandle) throws -> CFRange {
+        let budget = ExtractionBudget(limits: limits)
+        try budget.check()
+        guard let range = client.selectedTextRange(of: element),
+              try validated(range),
+              range.length == 0
+        else {
+            throw MacOSAccessibilityExtractionError.requiredAttributesUnavailable
+        }
+        return range
+    }
+
+    func extract(
+        rectangle: SelectionRectangle,
+        display: DisplayGeometry,
+        from element: AccessibilityElementHandle,
+        requiredPID: pid_t
+    ) throws -> String {
+        let budget = ExtractionBudget(limits: limits)
+        try validateBoundElement(element, requiredPID: requiredPID, budget: budget)
+        let value = try snapshot(from: element, budget: budget)
+        try ensureNoSecureDescendants(of: element, budget: budget)
+        try validateBoundElement(element, requiredPID: requiredPID, budget: budget)
+        switch CoordinateGridMapper().map(
+            selection: rectangle,
+            display: display,
+            grid: value.grid,
+            visualLines: value.lines,
+            policy: GridMappingPolicy()
+        ) {
+        case let .selection(selection):
+            return selection.plainText
+        case .empty:
+            return ""
+        case let .unsupported(reason):
+            throw MacOSAccessibilityExtractionError.unsupportedMapping(reason)
+        }
+    }
+
+    func validateBoundElement(
+        _ element: AccessibilityElementHandle,
+        requiredPID: pid_t,
+        budget: ExtractionBudget
+    ) throws {
+        guard client.isTrusted else {
+            throw SelectionPermissionRequiredError()
+        }
+        guard try checkedPID(of: element, budget: budget) == requiredPID else {
+            throw MacOSAccessibilityExtractionError.targetMismatch
+        }
+        _ = try candidateChain(
+            startingAt: element,
+            requiredPID: requiredPID,
+            budget: budget
+        )
+        guard let focused = client.focusedElement(inProcess: requiredPID),
+              try candidateChain(
+                  startingAt: focused,
+                  requiredPID: requiredPID,
+                  budget: budget
+              ).contains(where: { client.isSameElement($0, element) })
+        else {
+            throw MacOSAccessibilityExtractionError.targetMismatch
+        }
+    }
+
+    func candidate(
+        startingAt element: AccessibilityElementHandle,
+        requiredPID: pid_t,
+        requiredWindow: AccessibilityElementHandle? = nil
+    ) throws -> BoundCandidate {
+        guard client.isTrusted else {
+            throw SelectionPermissionRequiredError()
+        }
+        let budget = ExtractionBudget(limits: limits)
+        guard try checkedPID(of: element, budget: budget) == requiredPID else {
+            throw MacOSAccessibilityExtractionError.targetMismatch
+        }
+        let chain = try candidateChain(
+            startingAt: element,
+            requiredPID: requiredPID,
+            budget: budget
+        )
+        var lastError: MacOSAccessibilityExtractionError = .requiredAttributesUnavailable
+        for element in chain {
+            do {
+                if let requiredWindow {
+                    guard let candidateWindow = client.window(of: element),
+                          client.isSameElement(candidateWindow, requiredWindow)
+                    else {
+                        throw MacOSAccessibilityExtractionError.targetMismatch
+                    }
+                }
+                let value = try snapshot(from: element, budget: budget)
+                try ensureNoSecureDescendants(of: element, budget: budget)
+                return BoundCandidate(element: element, grid: value.grid, lines: value.lines)
+            } catch let error as MacOSAccessibilityExtractionError {
+                switch error {
+                case .requiredAttributesUnavailable, .visibleRangeUnavailable,
+                     .lineGeometryUnavailable, .unstableGeometry:
+                    lastError = error
+                default:
+                    throw error
+                }
+            }
+        }
+        throw lastError
     }
 
     private struct TextSnapshot {
@@ -355,6 +520,7 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
         from element: AccessibilityElementHandle,
         budget: ExtractionBudget
     ) throws -> TextSnapshot {
+        try ensureNoSecureDescendants(of: element, budget: budget)
         try budget.check()
         let parameterizedNames = client.parameterizedAttributeNames(of: element)
         guard parameterizedNames.contains(kAXStringForRangeParameterizedAttribute),
@@ -505,6 +671,52 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             ),
             lines: try alignedVisualLines(from: measured, budget: budget)
         )
+    }
+
+    private func ensureNoSecureDescendants(
+        of element: AccessibilityElementHandle,
+        budget: ExtractionBudget
+    ) throws {
+        try budget.check()
+        client.setMessagingTimeout(limits.perMessageTimeout, for: element)
+        guard let rootChildCount = client.childCount(of: element),
+              rootChildCount <= limits.maximumCandidates,
+              let rootChildren = client.children(
+                  of: element,
+                  limit: limits.maximumCandidates
+              ),
+              rootChildren.count == rootChildCount
+        else {
+            throw MacOSAccessibilityExtractionError.resourceLimitExceeded
+        }
+        try budget.check()
+        var pending = rootChildren
+        var visited: [AccessibilityElementHandle] = []
+        while let candidate = pending.popLast() {
+            try budget.check()
+            guard visited.count < limits.maximumCandidates else {
+                throw MacOSAccessibilityExtractionError.resourceLimitExceeded
+            }
+            if visited.contains(where: { client.isSameElement($0, candidate) }) {
+                continue
+            }
+            visited.append(candidate)
+            client.setMessagingTimeout(limits.perMessageTimeout, for: candidate)
+            if try isSecure(candidate, budget: budget) {
+                throw MacOSAccessibilityExtractionError.secureTextElement
+            }
+            let remaining = limits.maximumCandidates - visited.count - pending.count
+            guard remaining >= 0,
+                  let childCount = client.childCount(of: candidate),
+                  childCount <= remaining,
+                  let children = client.children(of: candidate, limit: remaining),
+                  children.count == childCount
+            else {
+                throw MacOSAccessibilityExtractionError.resourceLimitExceeded
+            }
+            try budget.check()
+            pending.append(contentsOf: children)
+        }
     }
 
     private func alignedVisualLines(
@@ -663,7 +875,7 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
     }
 }
 
-private final class ExtractionBudget: @unchecked Sendable {
+final class ExtractionBudget: @unchecked Sendable {
     private let limits: AccessibilityExtractionLimits
     private let startUptime: TimeInterval
     private var callCount = 0
@@ -754,14 +966,18 @@ final class MacOSAccessibilityTextExtractor: RectangularTextExtracting, @uncheck
     }
 }
 
-private struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
+struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
     var isTrusted: Bool { AXIsProcessTrusted() }
 
-    func hitTestedElement(at point: CGPoint) -> AccessibilityElementHandle? {
-        let systemWide = AXUIElementCreateSystemWide()
+    func hitTestedElement(
+        at point: CGPoint,
+        inProcess processIdentifier: pid_t?
+    ) -> AccessibilityElementHandle? {
+        let root = processIdentifier.map(AXUIElementCreateApplication)
+            ?? AXUIElementCreateSystemWide()
         var element: AXUIElement?
         guard AXUIElementCopyElementAtPosition(
-            systemWide,
+            root,
             Float(point.x),
             Float(point.y),
             &element
@@ -773,9 +989,10 @@ private struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
         return AccessibilityElementHandle(rawElement: element)
     }
 
-    func focusedElement() -> AccessibilityElementHandle? {
-        let systemWide = AXUIElementCreateSystemWide()
-        guard let value = copyAttribute(systemWide, kAXFocusedUIElementAttribute),
+    func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle? {
+        let root = processIdentifier.map(AXUIElementCreateApplication)
+            ?? AXUIElementCreateSystemWide()
+        guard let value = copyAttribute(root, kAXFocusedUIElementAttribute),
               CFGetTypeID(value) == AXUIElementGetTypeID()
         else {
             return nil
@@ -791,6 +1008,103 @@ private struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
             return nil
         }
         return AccessibilityElementHandle(rawElement: value as! AXUIElement)
+    }
+
+    func childCount(of element: AccessibilityElementHandle) -> Int? {
+        guard let rawElement = element.rawElement else {
+            return nil
+        }
+        var count: CFIndex = 0
+        guard AXUIElementGetAttributeValueCount(
+            rawElement,
+            kAXChildrenAttribute as CFString,
+            &count
+        ) == .success else {
+            return nil
+        }
+        return count >= 0 ? count : nil
+    }
+
+    func children(
+        of element: AccessibilityElementHandle,
+        limit: Int
+    ) -> [AccessibilityElementHandle]? {
+        guard let rawElement = element.rawElement, limit >= 0 else {
+            return nil
+        }
+        if limit == 0 {
+            return []
+        }
+        var values: CFArray?
+        guard AXUIElementCopyAttributeValues(
+            rawElement,
+            kAXChildrenAttribute as CFString,
+            0,
+            limit,
+            &values
+        ) == .success,
+        let values = values as? [AXUIElement]
+        else {
+            return nil
+        }
+        return values.map(AccessibilityElementHandle.init(rawElement:))
+    }
+
+    func window(of element: AccessibilityElementHandle) -> AccessibilityElementHandle? {
+        guard let rawElement = element.rawElement else {
+            return nil
+        }
+        if stringAttribute(element, kAXRoleAttribute) == (kAXWindowRole as String) {
+            return element
+        }
+        guard let value = copyAttribute(rawElement, kAXWindowAttribute),
+              CFGetTypeID(value) == AXUIElementGetTypeID()
+        else {
+            return nil
+        }
+        return AccessibilityElementHandle(rawElement: value as! AXUIElement)
+    }
+
+    func windowCount(inProcess processIdentifier: pid_t) -> Int? {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        _ = AXUIElementSetMessagingTimeout(application, 1)
+        var count: CFIndex = 0
+        guard AXUIElementGetAttributeValueCount(
+            application,
+            kAXWindowsAttribute as CFString,
+            &count
+        ) == .success
+        else {
+            return nil
+        }
+        return count >= 0 ? count : nil
+    }
+
+    func windows(
+        inProcess processIdentifier: pid_t,
+        limit: Int
+    ) -> [AccessibilityElementHandle]? {
+        guard limit >= 0 else {
+            return nil
+        }
+        if limit == 0 {
+            return []
+        }
+        let application = AXUIElementCreateApplication(processIdentifier)
+        _ = AXUIElementSetMessagingTimeout(application, 1)
+        var values: CFArray?
+        guard AXUIElementCopyAttributeValues(
+            application,
+            kAXWindowsAttribute as CFString,
+            0,
+            limit,
+            &values
+        ) == .success,
+        let values = values as? [AXUIElement]
+        else {
+            return nil
+        }
+        return values.map(AccessibilityElementHandle.init(rawElement:))
     }
 
     func isSameElement(
@@ -857,6 +1171,15 @@ private struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
     func visibleCharacterRange(of element: AccessibilityElementHandle) -> CFRange? {
         guard let rawElement = element.rawElement,
               let value = copyAttribute(rawElement, kAXVisibleCharacterRangeAttribute)
+        else {
+            return nil
+        }
+        return rangeFromAXValue(value)
+    }
+
+    func selectedTextRange(of element: AccessibilityElementHandle) -> CFRange? {
+        guard let rawElement = element.rawElement,
+              let value = copyAttribute(rawElement, kAXSelectedTextRangeAttribute)
         else {
             return nil
         }

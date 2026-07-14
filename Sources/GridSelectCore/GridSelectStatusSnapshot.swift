@@ -158,6 +158,12 @@ private extension SelectionModeFailure {
             return "Text could not be read"
         case .clipboardWriteFailed:
             return "Copy failed"
+        case .secureInputUnsupported:
+            return "Secure input is unsupported"
+        case .sourceContextInvalid:
+            return "Source changed"
+        case .unsupportedText:
+            return "Text region unsupported"
         }
     }
 
@@ -173,6 +179,12 @@ private extension SelectionModeFailure {
             return "GridSelect could not extract text from this selection."
         case .clipboardWriteFailed:
             return "GridSelect could not write the selected text to the clipboard."
+        case .secureInputUnsupported:
+            return "GridSelect does not inspect or copy secure text. Choose a non-secure text region."
+        case .sourceContextInvalid:
+            return "The source app, window, or focused text changed. Start a new Grid selection."
+        case .unsupportedText:
+            return "This text region does not expose stable monospace accessibility geometry."
         }
     }
 }

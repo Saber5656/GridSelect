@@ -18,6 +18,14 @@ public struct SelectionElementIdentity: Equatable, Hashable, Sendable {
     }
 }
 
+public struct SelectionSessionIdentity: Equatable, Hashable, Sendable {
+    public let rawValue: UInt64
+
+    public init(rawValue: UInt64) {
+        self.rawValue = rawValue
+    }
+}
+
 public struct GridCaretCandidate: Equatable, Sendable {
     public let element: SelectionElementIdentity
     public let anchor: GridBoundary
@@ -61,6 +69,7 @@ public struct GridMouseAnchorCandidate: Equatable, Sendable {
 
 public struct ActivationSourceContext: Equatable, Sendable {
     public let activation: GridActivation
+    public let sessionIdentity: SelectionSessionIdentity?
     public let source: SelectionSourceIdentity
     public let sourceWindowFrame: ScreenRectangle
     public let displays: [DisplayGeometry]
@@ -68,12 +77,14 @@ public struct ActivationSourceContext: Equatable, Sendable {
 
     public init(
         activation: GridActivation,
+        sessionIdentity: SelectionSessionIdentity? = nil,
         source: SelectionSourceIdentity,
         sourceWindowFrame: ScreenRectangle,
         displays: [DisplayGeometry],
         caretCandidate: GridCaretCandidate?
     ) {
         self.activation = activation
+        self.sessionIdentity = sessionIdentity
         self.source = source
         self.sourceWindowFrame = sourceWindowFrame
         self.displays = displays
@@ -83,7 +94,9 @@ public struct ActivationSourceContext: Equatable, Sendable {
 
 public struct BoundSelectionContext: Equatable, Sendable {
     public let activation: GridActivation
+    public let sessionIdentity: SelectionSessionIdentity?
     public let source: SelectionSourceIdentity
+    public let sourceWindowFrame: ScreenRectangle
     public let element: SelectionElementIdentity
     public let anchor: GridBoundary
     public let sourceRange: Range<Int>
@@ -92,7 +105,9 @@ public struct BoundSelectionContext: Equatable, Sendable {
 
     public init(
         activation: GridActivation,
+        sessionIdentity: SelectionSessionIdentity? = nil,
         source: SelectionSourceIdentity,
+        sourceWindowFrame: ScreenRectangle,
         element: SelectionElementIdentity,
         anchor: GridBoundary,
         sourceRange: Range<Int>,
@@ -100,7 +115,9 @@ public struct BoundSelectionContext: Equatable, Sendable {
         viewport: GridSelectionViewport? = nil
     ) {
         self.activation = activation
+        self.sessionIdentity = sessionIdentity
         self.source = source
+        self.sourceWindowFrame = sourceWindowFrame
         self.element = element
         self.anchor = anchor
         self.sourceRange = sourceRange
@@ -194,7 +211,9 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
         }
         let context = BoundSelectionContext(
             activation: activationContext.activation,
+            sessionIdentity: activationContext.sessionIdentity,
             source: source,
+            sourceWindowFrame: activationContext.sourceWindowFrame,
             element: element,
             anchor: anchor,
             sourceRange: sourceRange,
