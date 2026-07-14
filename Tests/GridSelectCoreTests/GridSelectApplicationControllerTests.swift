@@ -115,10 +115,29 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         let extractor = ApplicationExtractorStub(shouldFail: true)
         let clipboard = ApplicationClipboardStub()
         let rectangle = SelectionRectangle(displayID: 1, x: 10, y: 20, width: 30, height: 40)
+        let frame = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let display = DisplayGeometry(
+            displayID: 1,
+            appKitFrame: frame,
+            coreGraphicsBounds: frame,
+            backingScale: 2
+        )
+        let boundContext = BoundSelectionContext(
+            activation: GridActivation(generation: 1),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 1),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: frame,
+            element: SelectionElementIdentity(rawValue: 1),
+            anchor: GridBoundary(row: 0, column: 0),
+            sourceRange: 0..<0,
+            display: display
+        )
         let controller = GridSelectApplicationController(
             shortcut: shortcut,
             permissionChecker: ApplicationPermissionStub(status: .granted),
-            overlay: ApplicationOverlayStub(result: .confirmed(rectangle)),
+            overlay: ApplicationOverlayStub(
+                result: .boundConfirmed(rectangle, boundContext)
+            ),
             extractor: extractor,
             clipboard: clipboard
         )
@@ -133,7 +152,7 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         )
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Text could not be read")
         let extractionCallCount = await extractor.callCount()
-        XCTAssertEqual(extractionCallCount, 0)
+        XCTAssertEqual(extractionCallCount, 1)
         XCTAssertTrue(clipboard.values.isEmpty)
     }
 
@@ -434,6 +453,15 @@ private actor ApplicationExtractorStub: RectangularTextExtracting {
         if shouldFail { throw ApplicationTestError.expected }
         return text
     }
+
+    func extractText(
+        in rectangle: SelectionRectangle,
+        boundContext: BoundSelectionContext
+    ) async throws -> String {
+        try await extractText(in: rectangle)
+    }
+
+    func validateCopyAuthorization(for boundContext: BoundSelectionContext?) async throws {}
 
     func callCount() -> Int { calls }
 }
