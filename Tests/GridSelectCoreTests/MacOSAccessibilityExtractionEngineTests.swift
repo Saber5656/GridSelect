@@ -545,6 +545,48 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
     }
 
     @MainActor
+    func testCaretCaptureEnumeratesMoreWindowsThanAXCandidateBudget() {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("text", pid: 10)
+        let sourceWindow = client.addElement(
+            "window-0",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(sourceWindow, for: text)
+        client.configureMonospace(text, lines: ["abcdef"])
+        for index in 1...10 {
+            _ = client.addElement(
+                "window-\(index)",
+                pid: 10,
+                frame: CGRect(x: index * 20, y: index * 20, width: 100, height: 100),
+                role: kAXWindowRole as String
+            )
+        }
+        client.focused = text
+        client.selectedRange = CFRange(location: 1, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+
+        switch service.captureCaretCandidate(
+            activation: GridActivation(generation: 73),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 173),
+            source: SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+            displays: [display]
+        ) {
+        case .captured:
+            break
+        default:
+            XCTFail("Expected window enumeration to use its dedicated budget")
+        }
+    }
+
+    @MainActor
     func testMouseBoundExtractionDoesNotDependOnFocusedElement() async throws {
         let client = FakeAccessibilityClient()
         let target = client.addElement("target", pid: 10)
