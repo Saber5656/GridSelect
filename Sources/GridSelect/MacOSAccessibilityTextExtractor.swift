@@ -209,6 +209,7 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
                 try budget.check()
                 do {
                     let snapshot = try snapshot(from: candidate, budget: budget)
+                    try ensureNoSecureDescendants(of: candidate, budget: budget)
                     let mapping = CoordinateGridMapper().map(
                         selection: rectangle,
                         display: display,
