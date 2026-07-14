@@ -131,10 +131,11 @@ final class GridSelectionLifecycleTests: XCTestCase {
         _ = lifecycle.moveKeyboardFocus(.up)
         XCTAssertEqual(currentSelection(lifecycle).rowRange, 0..<2)
         _ = lifecycle.moveKeyboardFocus(.down)
-        _ = lifecycle.moveKeyboardFocus(.down)
         XCTAssertEqual(currentSelection(lifecycle).rowRange, 1..<2)
         _ = lifecycle.moveKeyboardFocus(.down)
         XCTAssertEqual(currentSelection(lifecycle).rowRange, 1..<3)
+        _ = lifecycle.moveKeyboardFocus(.down)
+        XCTAssertEqual(currentSelection(lifecycle).rowRange, 1..<4)
     }
 
     func testFailedCopyIsTerminalAndCancelRejectsStaleCompletion() {
