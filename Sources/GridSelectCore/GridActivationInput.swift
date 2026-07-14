@@ -177,8 +177,14 @@ public struct GridActivationInputMachine: Equatable, Sendable {
         if timestamp > current.deadline {
             handoff = nil
             gesturePhase = .idle
+            let delivery: GridInputDisposition.Delivery
+            if case .other = key {
+                delivery = .passThrough
+            } else {
+                delivery = .consume
+            }
             return GridInputDisposition(
-                delivery: .consume,
+                delivery: delivery,
                 effect: .handoffCancelled(current.activation, .timedOut)
             )
         }
