@@ -87,7 +87,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
                     preferredDisplayID: preferredDisplayID(for: sourceContext),
                     sessionGeneration: sessionGeneration
                 )
-                if sourceContext?.caretCandidate == nil {
+                if let sourceContext, sourceContext.caretCandidate == nil {
                     setGridStatusMessage(
                         "Keyboard caret unavailable — click and drag in supported monospace text"
                     )
