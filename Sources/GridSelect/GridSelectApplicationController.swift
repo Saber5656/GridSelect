@@ -30,7 +30,6 @@ final class GridSelectApplicationController {
     let statusModel: GridSelectStatusModel
 
     private let coordinator: SelectionModeCoordinator
-    private var manualActivationGeneration: UInt64 = 0
 
     init(
         statusModel: GridSelectStatusModel? = nil,
@@ -92,16 +91,7 @@ final class GridSelectApplicationController {
 
     @discardableResult
     func activateSelection() -> Bool {
-        guard manualActivationGeneration < UInt64.max else {
-            return false
-        }
-        manualActivationGeneration += 1
-        guard let sourceContext = MacOSActivationSourceCapturer.capture(
-            activation: GridActivation(generation: manualActivationGeneration)
-        ) else {
-            return false
-        }
-        return coordinator.activate(sourceContext: sourceContext)
+        coordinator.activate()
     }
 
     @discardableResult

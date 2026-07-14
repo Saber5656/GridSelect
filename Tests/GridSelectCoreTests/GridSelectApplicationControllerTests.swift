@@ -4,6 +4,30 @@ import XCTest
 
 @MainActor
 final class GridSelectApplicationControllerTests: XCTestCase {
+    func testManualActivationUsesUnboundOverlayPath() async {
+        let clipboard = ApplicationClipboardStub()
+        let rectangle = SelectionRectangle(
+            displayID: 1,
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40
+        )
+        let controller = GridSelectApplicationController(
+            shortcut: ApplicationShortcutStub(),
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .confirmed(rectangle)),
+            extractor: ApplicationExtractorStub(text: "manual"),
+            clipboard: clipboard
+        )
+
+        XCTAssertTrue(controller.activateSelection())
+        await waitForTerminalState(controller)
+
+        XCTAssertEqual(controller.statusModel.snapshot.selectionState, .completed)
+        XCTAssertEqual(clipboard.values, ["manual"])
+    }
+
     func testShortcutRejectsUnboundConfirmationBeforeExtractionOrCopy() async {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
