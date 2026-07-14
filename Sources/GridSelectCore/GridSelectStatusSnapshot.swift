@@ -150,6 +150,8 @@ private extension SelectionModeFailure {
         switch self {
         case .shortcutRegistrationFailed:
             return "Shortcut unavailable"
+        case .listenerDisabled:
+            return "Grid listener disabled"
         case .overlayFailed:
             return "Selection could not start"
         case .extractionFailed:
@@ -163,6 +165,8 @@ private extension SelectionModeFailure {
         switch self {
         case .shortcutRegistrationFailed:
             return "The shortcut could not be registered in this pre-alpha build."
+        case .listenerDisabled:
+            return "macOS disabled the Grid input listener. Recheck Input Monitoring before retrying."
         case .overlayFailed:
             return "GridSelect could not show the selection overlay."
         case .extractionFailed:

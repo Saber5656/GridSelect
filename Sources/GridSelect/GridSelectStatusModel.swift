@@ -10,7 +10,7 @@ final class GridSelectStatusModel: ObservableObject {
 
     init(
         permissionStatus: SelectionPermissionStatus = AccessibilityPermissionClient.status,
-        shortcutStatus: ShortcutReadiness = .inactive(displayName: "⌘⇧G"),
+        shortcutStatus: ShortcutReadiness = .inactive(displayName: "Double-Shift"),
         selectionState: SelectionModeState = .idle,
         permissionStatusProvider: @escaping @MainActor () -> SelectionPermissionStatus = {
             AccessibilityPermissionClient.status

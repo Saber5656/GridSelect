@@ -156,4 +156,15 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
         XCTAssertFalse(shortcutActive.isReady)
         XCTAssertEqual(shortcutActive.statusTitle, "Accessibility required")
     }
+
+    func testListenerDisabledHasActionableStatus() {
+        let snapshot = GridSelectStatusSnapshot(
+            permissionStatus: .granted,
+            shortcutStatus: .active(displayName: "Double-Shift"),
+            selectionState: .failed(.listenerDisabled)
+        )
+
+        XCTAssertEqual(snapshot.statusTitle, "Grid listener disabled")
+        XCTAssertTrue(snapshot.statusDetail.contains("Input Monitoring"))
+    }
 }

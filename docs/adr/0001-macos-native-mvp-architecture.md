@@ -86,12 +86,17 @@ recognized, the bounded transition guard may transiently inspect only virtual-ke
 code and Command-modifier state to classify and consume Arrow,
 Command-C, and Escape until the overlay proves key/first-responder ownership;
 these become generation-tagged semantic commands, not stored raw events. Shift
-release and ordinary input always pass through. Timeout, overflow, another key,
-or setup failure cancels and discards the pending session. Characters are never
-decoded, and inspected key/modifier values are never retained or logged. The tap
-is disabled whenever GridSelect is not ready to use it. Grid-mode commands are
-handled locally by the overlay after caret capture. Carbon `Command-Shift-G` remains historical
-prototype evidence, not a production fallback or advertised shortcut.
+release and ordinary input always pass through. When one of those guarded
+key-down events is consumed, only its semantic key class is retained briefly so
+the matching key-up cannot leak into the source app after overlay handoff. That
+matching-release tail expires 500 ms after the consumed key-down, is cleared on
+tap disablement, never decodes or stores characters, and passes unrelated or
+expired key-up events through unchanged. Timeout, overflow, another key, or
+setup failure cancels and discards the pending session. Inspected key/modifier
+values are never logged. The tap is disabled whenever GridSelect is not ready to
+use it. Grid-mode commands are handled locally by the overlay after caret
+capture. Carbon `Command-Shift-G` remains historical prototype evidence, not a
+production fallback or advertised shortcut.
 
 The handoff queue has a fixed capacity of 32 ordered entries. Each guarded
 key/repeat semantic consumes one entry. Second-Shift release still passes through

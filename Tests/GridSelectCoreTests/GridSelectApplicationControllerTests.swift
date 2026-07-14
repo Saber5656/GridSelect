@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class GridSelectApplicationControllerTests: XCTestCase {
-    func testShortcutRunsOverlayExtractionFormattingCopyAndSuccessStatus() async {
+    func testShortcutRejectsUnboundConfirmationBeforeExtractionOrCopy() async {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
         let permissionSetup = ApplicationPermissionSetupPresenterStub()
@@ -22,17 +22,20 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertTrue(shortcut.trigger())
         await waitForTerminalState(controller)
 
-        XCTAssertEqual(clipboard.values, ["alpha  \nbravo  "])
-        XCTAssertEqual(controller.statusModel.snapshot.selectionState, .completed)
-        XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Copied to clipboard")
+        XCTAssertTrue(clipboard.values.isEmpty)
+        XCTAssertEqual(
+            controller.statusModel.snapshot.selectionState,
+            .failed(.extractionFailed)
+        )
+        XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Text could not be read")
         XCTAssertEqual(
             controller.statusModel.snapshot.shortcutStatus,
-            .active(displayName: "⌘⇧G")
+            .active(displayName: "Double-Shift")
         )
         XCTAssertEqual(permissionSetup.presentationCount, 0)
     }
 
-    func testPasteboardFailureSurfacesInStatusWithoutCrash() async {
+    func testUnboundShortcutNeverAttemptsFailingPasteboard() async {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
         clipboard.shouldFail = true
@@ -51,9 +54,10 @@ final class GridSelectApplicationControllerTests: XCTestCase {
 
         XCTAssertEqual(
             controller.statusModel.snapshot.selectionState,
-            .failed(.clipboardWriteFailed)
+            .failed(.extractionFailed)
         )
-        XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Copy failed")
+        XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Text could not be read")
+        XCTAssertTrue(clipboard.values.isEmpty)
     }
 
     func testShortcutCancellationSkipsExtractionAndClipboard() async {
@@ -100,6 +104,8 @@ final class GridSelectApplicationControllerTests: XCTestCase {
             .failed(.extractionFailed)
         )
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Text could not be read")
+        let extractionCallCount = await extractor.callCount()
+        XCTAssertEqual(extractionCallCount, 0)
         XCTAssertTrue(clipboard.values.isEmpty)
     }
 
@@ -165,7 +171,7 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertFalse(controller.start())
         XCTAssertEqual(
             controller.statusModel.snapshot.shortcutStatus,
-            .registrationFailed(displayName: "⌘⇧G")
+            .registrationFailed(displayName: "Double-Shift")
         )
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Shortcut unavailable")
     }
@@ -184,10 +190,11 @@ private enum ApplicationTestError: Error {
 @MainActor
 private final class ApplicationShortcutStub: SelectionShortcutRegistering {
     var shouldFail = false
-    private var handler: (@MainActor @Sendable () -> Void)?
+    private var handler: (@MainActor @Sendable (SelectionShortcutEvent) -> Void)?
+    private var nextGeneration: UInt64 = 0
 
-    func registerActivationHandler(
-        _ handler: @escaping @MainActor @Sendable () -> Void
+    func registerEventHandler(
+        _ handler: @escaping @MainActor @Sendable (SelectionShortcutEvent) -> Void
     ) throws {
         if shouldFail { throw ApplicationTestError.expected }
         self.handler = handler
@@ -199,8 +206,26 @@ private final class ApplicationShortcutStub: SelectionShortcutRegistering {
 
     func trigger() -> Bool {
         guard let handler else { return false }
-        handler()
+        nextGeneration += 1
+        handler(.activated(testSourceContext(generation: nextGeneration)))
         return true
+    }
+
+    private func testSourceContext(generation: UInt64) -> ActivationSourceContext {
+        ActivationSourceContext(
+            activation: GridActivation(generation: generation),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+            displays: [
+                DisplayGeometry(
+                    displayID: 1,
+                    appKitFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+                    coreGraphicsBounds: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+                    backingScale: 2
+                ),
+            ],
+            caretCandidate: nil
+        )
     }
 }
 
