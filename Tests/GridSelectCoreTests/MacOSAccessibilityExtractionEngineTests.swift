@@ -600,7 +600,8 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
             return XCTFail("Expected bound mouse context")
         }
 
-        XCTAssertEqual(try await service.extractText(in: selection, boundContext: bound), "targ")
+        let output = try await service.extractText(in: selection, boundContext: bound)
+        XCTAssertEqual(output, "targ")
         try await service.validateCopyAuthorization(for: bound)
         XCTAssertGreaterThan(client.textReadsByElement["target", default: 0], 0)
         XCTAssertEqual(client.textReadsByElement["focused-elsewhere", default: 0], 0)
