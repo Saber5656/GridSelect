@@ -227,13 +227,19 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         preferredDisplayID: UInt32?,
         sessionGeneration: UInt64
     ) {
-        panels = NSScreen.screens.map {
+        let screens = NSScreen.screens
+        panels = screens.map {
             makePanel(for: $0, sessionGeneration: sessionGeneration)
         }
 
-        let preferredScreen = preferredDisplayID.flatMap { preferredDisplayID in
-            NSScreen.screens.first(where: { displayID(for: $0) == preferredDisplayID })
-        } ?? NSScreen.main ?? NSScreen.screens.first
+        let preferredScreen: NSScreen?
+        if let preferredDisplayID {
+            preferredScreen = screens.first {
+                displayID(for: $0) == preferredDisplayID
+            }
+        } else {
+            preferredScreen = NSScreen.main ?? screens.first
+        }
         guard let owningPanel = panels.first(where: { $0.screen === preferredScreen }),
               let contentView = owningPanel.contentView
         else {
