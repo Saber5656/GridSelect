@@ -152,17 +152,19 @@ final class MacOSGlobalShortcutLifecycleTests: XCTestCase {
 
     func testEffectRelayPreservesSubmissionOrder() async {
         var delivered: [GridInputEffect] = []
+        let deliveredThirdEffect = expectation(description: "third effect delivered")
         let relay = MacOSGridEventEffectRelay { effect in
             delivered.append(effect)
+            if delivered.count == 3 {
+                deliveredThirdEffect.fulfill()
+            }
         }
         let activation = GridActivation(generation: 1)
         relay.submit(.activated(activation))
         relay.submit(.handoffCancelled(activation, .ordinaryKey))
         relay.submit(.listenerDisabled(nil))
 
-        for _ in 0..<10 where delivered.count < 3 {
-            await Task.yield()
-        }
+        await fulfillment(of: [deliveredThirdEffect], timeout: 1)
         XCTAssertEqual(
             delivered,
             [
