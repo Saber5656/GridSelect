@@ -6,8 +6,8 @@ Scope: Pure coordinate-to-grid model, fixture requirements, and MVP edge-case be
 
 ## Purpose
 
-GridSelect converts a user-drawn overlay rectangle into a rectangular range of
-text rows and columns. For the first MVP, this model is intentionally narrow:
+GridSelect converts keyboard or mouse column-selection boundaries into a
+rectangular range of text rows and columns. For the first MVP, this model is intentionally narrow:
 visible monospace text, macOS overlay coordinates, and text geometry exposed by
 Accessibility APIs.
 
@@ -178,6 +178,31 @@ Derivation order:
 Rows and columns are zero-based half-open ranges. Start indexes are inclusive;
 end indexes are exclusive.
 
+### VS Code-inspired input boundary model
+
+Both keyboard and mouse input produce the same grid-boundary state before screen
+geometry mapping:
+
+| State | Rule |
+|---|---|
+| Anchor | Immutable insertion/grid boundary `(anchorRow, anchorColumn)` captured at keyboard entry or first mouse down. |
+| Initial focus | `(anchorRow, anchorColumn)`, producing a zero-width selection on one row. |
+| Left / Right | Move `focusColumn` by exactly one grid boundary per key or repeat event. |
+| Up / Down | Move `focusRow` by exactly one visible visual row per key or repeat event without changing `focusColumn`. |
+| Rows | `rowStart = min(anchorRow, focusRow)` and `rowEnd = max(anchorRow, focusRow) + 1`; both endpoint rows participate like column-selection multi-cursors. |
+| Columns | `columnStart = min(anchorColumn, focusColumn)` and `columnEnd = max(anchorColumn, focusColumn)`; crossing the anchor shrinks to zero and then expands in the opposite direction. |
+| Mouse | Convert x to `(x - originX) / characterWidth` and snap to the nearest insertion boundary. For the initial anchor, an exact half-cell tie chooses the trailing/right boundary. After the anchor is immutable, a focus tie chooses the boundary farther from that anchor. Convert y to `floor((y - originY) / lineHeight)` for the endpoint visual row. Clamp columns to 0 or greater and rows to visible bounds. Apply a scale-aware epsilon only at exact tested ties. Crossing one character width moves focus by one column. |
+| Empty width | `columnStart == columnEnd` is a visible caret/multi-cursor state but has zero text area. Command-C leaves the clipboard unchanged and keeps Grid mode selected with actionable status. |
+
+This follows VS Code's column-selection concept: the cursor starts in one corner,
+the opposite corner moves, and each included row has a cursor at the focus edge.
+It does not copy whole lines for an empty column selection.
+
+Point-to-boundary fixtures must cover immediately left/right of a midpoint, an
+initial-anchor exact midpoint, focus exact midpoints on both sides of the anchor,
+exact cell boundaries, negative x clamping, first/last visible row clamping, and
+fractional-point Retina geometry.
+
 The rectangle is first intersected with the vertical extent of the known visible
 line list. Horizontal selection may extend beyond an individual line's text
 length, because missing columns are represented explicitly.
@@ -215,10 +240,11 @@ The MVP includes any cell touched by the selection rectangle:
 | Left/top edge before the grid origin | Clamp to row or column 0. |
 | Right edge after line content | Keep the requested column range and mark missing cells per row. |
 
-This avoids a hidden 50 percent snapping threshold and makes the behavior easy
-to test. Implementations should use a small epsilon only to prevent floating
-point noise at exact cell boundaries; fixtures should use exact expected
-indexes.
+Extraction mapping receives an already snapped boundary rectangle and must not
+apply an additional hidden 50 percent inclusion threshold. The midpoint rule
+above belongs only to pointer-to-boundary snapping. Implementations should use a
+small epsilon only to prevent floating point noise at exact cell boundaries;
+fixtures should use exact expected indexes.
 
 ## Text-to-Cell Rules
 

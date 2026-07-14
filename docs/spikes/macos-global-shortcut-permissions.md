@@ -6,16 +6,36 @@ Issue: [#8 Spike global shortcut and permission flow on macOS](https://github.co
 
 ## Summary
 
-Use Carbon hot-key registration (`RegisterEventHotKey` from `Carbon.HIToolbox`, ideally via a maintained Swift wrapper such as [sindresorhus/KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) or [soffes/HotKey](https://github.com/soffes/HotKey)) as the MVP global shortcut path.
+Decision update, 2026-07-15: use a narrowly active `CGEventTap` with
+**Input Monitoring** for the approved production interaction. The user enters
+Grid mode by double-tapping Shift, keeps the second Shift press held while Arrow
+keys adjust a caret-anchored rectangle, releases Shift to freeze it, and presses
+Command-C to copy. Escape cancels. This modifier-only gesture and held-key state
+cannot be expressed with Carbon hot-key registration.
 
-In ADR 0001's terms ("choose the least invasive option", "avoid event taps unless the shortcut spike proves they are necessary", "avoid requesting … Input Monitoring unless a later decision proves they are necessary"):
+The event tap must:
 
-- Hot-key registration requires **no TCC permission** — no Input Monitoring and no Accessibility.
-- The app receives only the registered key combination. There is no key-stream visibility, so no key-logging capability exists and no privacy copy is needed for the shortcut itself.
-- It works in sandboxed and Mac App Store apps and is the de-facto approach used by mainstream menu-bar utilities and wrapper libraries.
-- The MVP already requires Accessibility for text extraction (#6). With hot-key registration, first-run onboarding needs exactly **one** sensitive permission instead of two.
+- Listen for `.flagsChanged` plus `.keyDown`. Outside the recognized handoff,
+  key-down is only a content-blind signal that invalidates a pending double-Shift
+  candidate; do not inspect its key code or characters there. During the bounded
+  handoff only, transiently inspect the virtual key code and Command modifier to
+  classify Arrow, Command-C, Escape, or `other`; never decode characters or
+  retain/log the inspected values.
+- Return every event unchanged outside the recognized activation handoff. During
+  that bounded handoff, consume only Arrow, Command-C, and Escape into semantic
+  commands; always pass Shift release and ordinary input through.
+- Retain no typed-key history and never log raw key values.
+- Be enabled only after an explicit user action grants Input Monitoring, and be
+  torn down or disabled when permission is absent or revoked.
 
-Keep a listen-only `CGEventTap` + **Input Monitoring** design as the documented **fallback**, adopted only if on-device validation shows hot-key registration cannot serve the MVP (see trigger criteria below). **Accessibility** remains a separate permission gate for the later text-extraction path, not for shortcut detection.
+**Accessibility** remains a separate gate for resolving the frontmost text
+element, insertion-caret geometry, and text bounds. After caret capture, the
+overlay becomes the local key responder for Shift+Arrow, Command-C, and Escape;
+these commands are not monitored globally or delivered to the source app. The
+historical Carbon
+`Command-Shift-G` prototype remains useful evidence about the rejected low-
+permission alternative, but it is not the MVP activation path or user-facing
+shortcut.
 
 For the pre-alpha, prefer Developer ID distribution outside the Mac App Store while the Accessibility text-extraction and overlay spikes are still being validated.
 
@@ -40,12 +60,16 @@ Out of scope:
 
 | Option | Permission surface | App Sandbox / App Store fit | Pros | Risks | Recommendation |
 |---|---|---|---|---|---|
-| `RegisterEventHotKey` (Carbon HIToolbox), directly or via KeyboardShortcuts / HotKey wrappers | **None known** — no Input Monitoring, no Accessibility. macOS Sequoia 15.0 rejects combos whose only modifiers are Shift/Option (relaxed again in 15.2); combos including Command or Control are unaffected | Works in sandboxed and Mac App Store apps | Purpose-built hot-key registration; delivers only the registered combo (no key stream); least invasive; actively maintained Swift wrappers with recorder UI | Legacy Carbon lineage; Apple DTS discourages it for keyboard-*monitoring* use cases; no page in the current Apple doc system; per-OS behavior changes (Sequoia) must be tracked | **Use for MVP** — validate on-device |
-| `CGEvent.tapCreate` / `CGEventTapCreate` listen-only event tap | Input Monitoring on modern macOS for listening to key events | Apple DTS states this is the sandbox-friendly path for keyboard *monitoring* and is available to Mac App Store apps | Official Core Graphics API, explicit preflight/request APIs, works when app is inactive, can observe combos hot keys cannot express (modifier-only, Fn) | Grants visibility of the full key stream — a sensitive permission with real onboarding cost; privacy wording and implementation discipline required; Swift callback/run-loop wiring is fiddly | **Fallback only** — adopt if hot-key registration proves insufficient |
+| `RegisterEventHotKey` (Carbon HIToolbox), directly or via KeyboardShortcuts / HotKey wrappers | **None known** — no Input Monitoring and no Accessibility | Works in sandboxed and Mac App Store apps | Purpose-built hot-key registration; receives only one registered combo | Cannot express double-Shift or held Shift+Arrow state; `Command-Shift-G` conflicts with Finder; legacy Carbon lineage | **Rejected for production interaction**; retain the prototype as historical evidence |
+| `CGEvent.tapCreate` / `CGEventTapCreate` active event tap | Input Monitoring is the documented keyboard-monitoring gate. GridSelect separately requires Accessibility for AX text/caret access. Exact active-filter TCC behavior remains an on-device evidence gate. | Works outside the active app; actual sandbox/App Store viability remains an evidence gate | Can observe modifier-only gestures and prevent immediate Grid commands from mutating the source before overlay readiness | Event suppression broadens responsibility; callback, timeout, queue bounds, TCC behavior, and permission revocation must fail closed | **Use for activation and the bounded transition guard only** |
 | `NSEvent.addGlobalMonitorForEvents` | Accessibility for key-related events | Poorer fit; Apple DTS recommends `CGEventTap` instead for sandboxed keyboard monitoring | Simple AppKit API; good for quick local experiments | Can only observe, key events need Accessibility — the wrong permission for this job | Avoid for MVP shortcut |
 | Local app shortcuts / SwiftUI commands | No global permission | App-only | Best UX when GridSelect is frontmost | Does not work globally | Use only for in-app commands |
 
-## Primary Path: Hot-Key Registration
+## Historical Prototype: Hot-Key Registration
+
+This section records the original least-permission recommendation and prototype.
+The 2026-07-15 interaction decision supersedes it for production because Carbon
+cannot represent double-Shift or Grid-mode held-key state.
 
 Implementation sketch (illustrative, not production code):
 
@@ -83,32 +107,73 @@ Behavior and constraints:
 | Concern | Detail | MVP handling |
 |---|---|---|
 | TCC | No permission prompt is expected for registration or delivery | Verify on-device as part of the prototype (see validation plan) |
-| macOS Sequoia modifier restriction | 15.0 intentionally rejects hot keys whose only modifiers are Shift and/or Option with `eventInternalErr` (-9868), as an anti-key-sniffing change; Apple relaxed Option/Option-Shift again in 15.2 beta. Combos including ⌘ or ⌃ are unaffected | Choose a default shortcut that includes ⌘ or ⌃; surface registration failure in the status UI |
+| macOS Sequoia modifier restriction | 15.0 intentionally rejects Carbon hot keys whose only modifiers are Shift and/or Option with `eventInternalErr` (-9868) | Historical reason Carbon cannot supply this gesture; production uses the permissioned event tap |
 | Registration failure / conflicts | `RegisterEventHotKey` returns a non-zero `OSStatus` when registration fails | Show a "shortcut inactive" state and let the user pick another combo (#16) |
-| Expressiveness | Cannot express modifier-only (e.g. double-tap ⌘), Fn-based, or media-key activation | Acceptable for the MVP default; a hard requirement for these would trigger the fallback |
-| DTS positioning | Apple DTS describes the API as legacy and recommends `CGEventTap` for keyboard *monitoring* | GridSelect needs activation, not monitoring; the least-invasive constraint in ADR 0001 wins. Revisit if Apple formally deprecates or breaks the API |
+| Expressiveness | Cannot express modifier-only activation or held-key state | Disqualifies Carbon for the approved Grid mode interaction |
+| DTS positioning | Apple DTS describes the API as legacy and recommends `CGEventTap` for keyboard *monitoring* | The approved flow requires a narrow monitored state machine, so use the Core Graphics path |
 
-## Fallback Path: Listen-Only CGEventTap + Input Monitoring
+## Production Path: Narrow Active CGEventTap
 
-Adopt only if one of these trigger criteria is met:
+The approved modifier-only gesture satisfies the former fallback trigger. The
+production listener is normally pass-through and becomes an active guard only
+for the activation handoff:
 
-1. On-device validation shows hot-key registration cannot deliver a usable default shortcut on supported macOS versions.
-2. The product later requires activation gestures hot keys cannot express (modifier-only, Fn-based).
-3. Apple formally deprecates or disables Carbon hot-key registration.
+- Use `.cgSessionEventTap`, `.headInsertEventTap`, and `.defaultTap`.
+- Listen for `.flagsChanged` and `.keyDown`; outside the handoff, a key-down event
+  only clears a pending double-Shift candidate without reading key code or
+  characters.
+- Match double-Shift and return original events unchanged outside the handoff.
+- Do not log modifier or key events. A coarse `gridModeEntered` diagnostic is enough.
+- If `CGEvent.tapCreate` returns `nil`, treat it as a missing permission or system
+  denial and move the UI into a "shortcut inactive" state. This is distinct from
+  the installed callback intentionally returning `nil` for a consumed guard event.
 
-If adopted, the listener should be a narrow, listen-only tap:
+Double-Shift recognition uses the macOS system double-click interval rather than
+a hard-coded timing constant. It requires Shift down/up followed by a second
+Shift down with no intervening non-modifier key. Releasing the second Shift before
+a valid keyboard rectangle exists keeps Grid mode armed for mouse selection.
+Before making the overlay key, capture the frontmost application and insertion-
+caret geometry. The overlay then handles Shift+Arrow, Command-C, and Escape as
+local events, preventing normal source-app selection or copy side effects.
 
-- Use `.cgSessionEventTap`, `.headInsertEventTap`, and `.listenOnly`.
-- Listen for `.keyDown` and, if needed for modifier-only state, `.flagsChanged`.
-- Match exactly one configured shortcut and return the original event unchanged.
-- Do not log key values except a coarse "matched shortcut" diagnostic.
-- If the tap returns `nil`, treat it as a missing permission or system denial and move the UI into a "shortcut inactive" state.
+The event-tap callback performs only timing/state updates and, during the bounded
+handoff, transient virtual-key/modifier classification. It dispatches a
+generation-tagged activation or semantic signal before immediately returning the
+original event or `nil` according to the guard rule. Permission checks,
+Accessibility calls, and AppKit work run on the main actor after confirming that
+the signal still belongs to the current generation.
+`tapDisabledByTimeout` and `tapDisabledByUserInput` make the listener inactive,
+cancel any active session through the shared idempotent cleanup path, and require
+an explicit Recheck instead of automatic re-enablement.
+
+On the recognized second Shift down, the callback enters a generation-tagged
+transition guard before dispatching AX/AppKit work. Until the owning overlay is
+key and its expected first responder is verified:
+
+- Arrow key-down becomes a direction/repeat semantic and returns `nil`.
+- Command-C becomes `copyRequested` and returns `nil`.
+- Escape becomes `cancelRequested` and returns `nil`.
+- Second-Shift release returns the original event but appends an ordered `freeze`
+  state marker. Other Shift modifier changes pass through without an entry.
+- Any other key-down cancels the pending Grid session and returns the event.
+- The queue capacity is exactly 32 entries. Every Arrow/Command-C/Escape repeat
+  semantic and `freeze` marker consumes one entry. An attempted 33rd entry,
+  setup failure, or a 500 ms deadline cancels before append and discards the
+  generation without clipboard mutation.
+
+After readiness, MainActor drains current-generation semantics in order. Arrow
+semantics before `freeze` adjust the boundary, `freeze` freezes the selection,
+and Arrow semantics after `freeze` remain consumed but are not applied. Command-C
+is actionable only after a nonzero selection is frozen; an earlier request is
+consumed without pasteboard mutation. Overlay-local routing then owns subsequent
+Grid commands. No raw event, character, or typed-key history crosses the callback
+boundary.
 
 The event tap docs say `CGEvent.tapCreate` creates an event tap and returns `nil` if the tap cannot be created. Requested event types can be removed from the mask when monitoring is not permitted, and an empty mask causes creation to fail. See [CGEvent.tapCreate](https://developer.apple.com/documentation/coregraphics/cgevent/1454426-tapcreate).
 
 Apple DTS recommends `CGEventTap` over `NSEvent` global monitors for sandboxed keyboard monitoring because the former uses Input Monitoring rather than Accessibility, with `CGPreflightListenEventAccess` and `CGRequestListenEventAccess` as the matching check/request APIs. See [Apple Developer Forums thread 707680](https://developer.apple.com/forums/thread/707680?answerId=716892022#716892022).
 
-Input Monitoring specifics (fallback only):
+Input Monitoring specifics:
 
 | Need | API |
 |---|---|
@@ -118,16 +183,21 @@ Input Monitoring specifics (fallback only):
 
 Apple Support describes Input Monitoring as the permission that allows apps to monitor keyboard, mouse, or trackpad input while the user is using other apps. See [Control access to input monitoring on Mac](https://support.apple.com/guide/mac-help/control-access-to-input-monitoring-on-mac-mchl4cedafb6/mac).
 
-Fallback implementation notes:
+Implementation notes:
 
 - Request only after an explicit user action, such as "Enable Shortcut".
 - Recheck on app activation and before starting the event tap.
+- Recheck both permissions immediately before entering Grid mode and immediately
+  before extraction/copy. Treat an Accessibility permission error as a terminal
+  session failure.
 - If the request returns `false` or the event tap still fails, show manual setup instructions and a "Recheck" action.
 - Assume the system prompt is one-shot per app identity; keep the bundle identifier and signing identity stable during pre-alpha to reduce TCC reset churn.
 
 ## Accessibility
 
-Do not require Accessibility to detect the global shortcut. Use it only when GridSelect needs to inspect other apps, such as text extraction via Accessibility APIs.
+Do not use Accessibility as a substitute for Input Monitoring. Use it when
+GridSelect needs to inspect another app, including resolving the insertion caret
+that anchors keyboard selection and extracting text geometry.
 
 | Need | API / behavior |
 |---|---|
@@ -141,22 +211,27 @@ Apple Support describes Accessibility permission as the permission users grant w
 
 MVP implication:
 
-- If the global shortcut fires but Accessibility is missing, show the setup panel instead of starting a broken selection.
-- Explain that Accessibility is for reading text positions from other apps after the user starts a selection.
-- Do not imply the shortcut itself needs any permission.
+- If double-Shift is detected but Accessibility is missing, show the setup panel
+  instead of starting a broken selection.
+- Explain that Input Monitoring recognizes the activation gesture and protects
+  the bounded startup handoff by consuming only Arrow/Command-C/Escape, while
+  Accessibility reads the caret and text positions after Grid mode starts.
 
 ## Sandbox and Distribution Implications
 
 Apple's App Sandbox documentation says the sandbox limits access to resources requested through entitlements, and that Mac App Store distribution requires App Sandbox. See [App Sandbox](https://developer.apple.com/documentation/security/app-sandbox), [Configuring the macOS App Sandbox](https://developer.apple.com/documentation/xcode/configuring-the-macos-app-sandbox), and [Distributing software on macOS](https://developer.apple.com/macos/distribution/).
 
-Hot-key registration works inside App Sandbox and is used by Mac App Store apps, so the primary path does not constrain the distribution decision. Apple DTS's `CGEventTap`-over-`NSEvent` guidance applies to the fallback path only.
+Apple DTS describes `CGEventTap` with Input Monitoring as the sandbox-compatible
+path for keyboard monitoring, while Apple documents `.defaultTap` as an active
+filter. App Store, sandbox, and active-filter TCC viability still require end-to-
+end validation; this document does not treat API availability as release evidence.
 
 Pre-alpha recommendation:
 
 | Track | Recommendation | Reason |
 |---|---|---|
 | Pre-alpha distribution | Developer ID signed and notarized, outside the Mac App Store | Faster iteration while validating Accessibility text extraction and overlay behavior; App Sandbox can be tested as a separate compatibility mode |
-| Shortcut implementation | Hot-key registration via a maintained wrapper | No permission surface; sandbox-compatible; keeps the fallback design ready if validation fails |
+| Grid input implementation | Normally pass-through active `CGEventTap` with the bounded transition guard | Required for reliable double-Shift recognition and immediate source-safe commands; TCC onboarding/revocation/filtering must be validated |
 | Accessibility text extraction | Validate both unsandboxed and sandboxed behavior in #6 / later implementation | Full AX access may be the gating factor for App Store viability |
 | App Store path | Defer decision until AX extraction and overlay spikes are complete | The shortcut path is feasible either way; the complete GridSelect workflow may not be |
 
@@ -164,18 +239,18 @@ For non-App Store distribution, Apple recommends Developer ID signing and notari
 
 ## Missing-Permission Flow
 
-Primary path — a single permission gate (Accessibility), plus shortcut-registration health:
+Production requires independent Input Monitoring and Accessibility gates:
 
 | State | Condition | User-visible behavior | App behavior |
 |---|---|---|---|
-| Ready | Hot key registered; Accessibility granted | Shortcut starts selection mode | Normal operation |
-| Selection setup needed | Hot key registered; Accessibility missing | Shortcut opens the setup panel | Do not start extraction; call `AXIsProcessTrustedWithOptions` only after an explicit user action |
-| Shortcut inactive | Hot-key registration failed (conflict or OS restriction) | Status shows "shortcut inactive" with a change-shortcut affordance | Retry after the user picks another combo |
-| Permission revoked | Accessibility revoked later | Inactive state and "Recheck" | Fail closed; no background retry loops |
+| Ready | Input Monitoring and Accessibility granted; event tap active | Double-Shift starts Grid mode | Normal operation |
+| Input setup needed | Input Monitoring missing | Status explains that Grid gestures cannot be observed and links to Input Monitoring | Do not create the event tap or overlay |
+| Accessibility setup needed | Input Monitoring granted; Accessibility missing | A detected Grid gesture opens or highlights Accessibility guidance | Do not resolve caret/text or show a misleading selection |
+| Input listener failed | Permission appears granted but event tap creation/enabling fails | Status shows Grid input inactive with Recheck guidance | Fail closed; do not fall back to a broad `NSEvent` monitor |
+| Permission revoked | Either permission is revoked later | Identify the missing permission and show Recheck | Disable the event tap and clean up any active overlay without copying |
 
-If the fallback path is ever adopted, it adds the Input Monitoring gate ("Shortcut setup needed" / "Tap failed" states) from the fallback section above.
-
-Avoid hiding all UI behind the global shortcut. A menu bar/status item must remain usable when the shortcut is inactive.
+Avoid hiding all UI behind double-Shift. A menu bar/status item must remain
+usable when either permission is missing or the event tap is inactive.
 
 ## Minimal Setup Copy
 
@@ -192,13 +267,11 @@ Steps:
 3. `Turn on GridSelect.`
 4. `Return to GridSelect and choose Recheck.`
 
-### Input Monitoring (fallback path only)
+### Input Monitoring
 
-Only needed if the CGEventTap fallback is adopted.
+Title: `Enable Grid mode keyboard controls`
 
-Title: `Enable the GridSelect shortcut`
-
-Body: `GridSelect needs Input Monitoring to notice its shortcut while you are using other apps. It ignores other key presses and does not store what you type.`
+Body: `GridSelect needs Input Monitoring to notice double-Shift while you use another app. During the brief startup handoff it holds only Arrow, Command-C, or Escape so they cannot affect that app before Grid mode is ready. It does not store what you type, and ordinary input and Shift release pass through.`
 
 Steps:
 
@@ -210,38 +283,37 @@ Steps:
 ## Recommended MVP Permission Flow
 
 1. Start as a menu bar or small agent-style app with a visible setup surface.
-2. On launch, register the default hot key (no permission involved). Surface registration failure in the status UI with a change-shortcut affordance.
-3. When the shortcut fires, check `AXIsProcessTrusted()` only if the next step needs Accessibility text extraction.
-4. If Accessibility is missing, call `AXIsProcessTrustedWithOptions` from an explicit setup action and show the Accessibility instructions.
-5. Once Accessibility is granted, start rectangular selection mode.
-6. Recheck permissions on app activation and after setup actions.
-7. Keep shortcut editing local-only and minimal for pre-alpha; do not build sync or full settings in this issue.
+2. Explain Input Monitoring before requesting it from an explicit enable action.
+3. Once granted, create the normally pass-through active event tap and surface creation, enablement, or filtering failure.
+4. On a valid double-Shift gesture, check Accessibility before resolving the frontmost text caret or showing a keyboard-anchored selection.
+5. If Accessibility is missing, request it only from an explicit setup action and show the Accessibility instructions.
+6. Once both permissions are granted, use double-Shift only to enter Grid mode; capture caret geometry before the overlay takes local keyboard focus for Shift+Arrow, Command-C, and Escape.
+7. Recheck both permissions on app activation and after setup actions; disable the listener and clean up active UI if either permission is revoked.
 
 ## On-Device Validation Plan
 
-The original recommendation was desk research. Issue #8's acceptance criteria
-also include a working prototype ("A prototype can trigger a visible action from
-a global shortcut"), and the prototype/manual validation path below must
-confirm:
+The original Carbon prototype remains historical evidence for issue #8. The
+production path additionally requires a `CGEventTap` prototype or implementation
+that confirms:
 
 | Check | Expected result |
 |---|---|
-| Fresh install, no permissions granted | Default ⌘-including hot key triggers a visible action with **no TCC prompt** |
-| Shift/Option-only combo on macOS 15.0–15.1 | Registration fails cleanly (`-9868`) and the failure is surfaced, not silent |
-| Conflicting combo (already registered elsewhere) | Failure surfaced; user can change the combo |
-| Sandboxed build | Hot key still works |
-| Unsandboxed Developer ID notarized build | Same flow; notarized build opens normally under Gatekeeper |
-| Grant Accessibility after shortcut works | Shortcut proceeds into the selection/extraction path |
-| Revoke Accessibility | Shortcut opens the setup panel instead of starting extraction |
-| Fallback build (CGEventTap), if exercised | Input Monitoring grant/revoke cycle starts/stops the tap per the fallback plan |
+| Fresh install, no permissions granted | UI remains reachable; no listener or overlay is presented as ready |
+| Request Input Monitoring | System prompt/path is accurate; denial leaves the listener inactive |
+| Grant Input Monitoring | Double-Shift is recognized without consuming unrelated input |
+| Double-Shift timing/state | One Shift press, a slow second press, or another intervening key does not enter Grid mode; the approved sequence does |
+| Grid commands | After caret capture, overlay-local held Shift+Arrow adjusts; Shift release freezes; Command-C requests copy; Escape cancels; the source app receives none of these commands |
+| Grant Accessibility | Keyboard entry resolves caret geometry in a supported text file |
+| Revoke either permission | Active input/overlay is disabled and cleaned up without copying |
+| Sandboxed and unsandboxed builds | Record actual end-to-end behavior separately; do not infer release viability from API availability |
 
-## Prototype
+## Historical Carbon Prototype
 
-Issue #8 now includes a minimal Carbon hot-key prototype at
+Issue #8 includes a minimal Carbon hot-key prototype at
 `spikes/macos-shortcut/hotkey-prototype.swift`.
 
-The prototype intentionally avoids third-party shortcut wrappers so the MVP can
-validate the raw permission surface first. It uses `RegisterEventHotKey` for the
+The prototype intentionally avoids third-party shortcut wrappers and validates
+the raw Carbon permission surface. It uses `RegisterEventHotKey` for the
 default `Command-Shift-G` shortcut, installs a Carbon hot-key event handler, and
 updates a menu-bar status item when the shortcut fires. It also beeps and prints
 an activation line to stdout so the visible action has both UI and terminal
@@ -273,7 +345,7 @@ swiftc spikes/macos-shortcut/hotkey-prototype.swift -o /tmp/gridselect-hotkey-pr
 This does not prove the visible action path, but it proves the current host can
 call `RegisterEventHotKey` for the default shortcut and receive `noErr`.
 
-## Prototype Validation Status
+## Historical Prototype Validation Status
 
 | Check | Result | Evidence |
 |---|---|---|
@@ -283,7 +355,8 @@ call `RegisterEventHotKey` for the default shortcut and receive `noErr`.
 | Visible menu-bar action | Not run in automated CLI | Requires an interactive macOS GUI session and manual `Command-Shift-G` input while the prototype keeps running. |
 | TCC prompt observation | Not run in automated CLI | Confirm during the same manual GUI run that shortcut detection does not request Accessibility or Input Monitoring. |
 
-Manual validation should copy this table into the task record or issue comment:
+If the historical prototype is rerun, copy this table into the task record or
+issue comment. It does not count as production Grid-mode evidence:
 
 | Field | Value |
 |---|---|
@@ -301,11 +374,16 @@ Manual validation should copy this table into the task record or issue comment:
 
 ## Open Follow-Ups
 
-- Run the shortcut prototype in an interactive GUI session and record visible-action evidence, no-TCC behavior, conflicts, and Sequoia-restriction checks.
+- Implement and run the active event-tap transition guard in an interactive GUI session;
+  record Input Monitoring grant/missing/revoked, double-Shift recognition,
+  unrelated-input pass-through, Grid commands, and cleanup evidence.
+- Keep Carbon prototype results labeled historical; they do not satisfy the
+  approved production activation criteria.
 - #6 must validate whether the Accessibility text-extraction path is compatible with App Sandbox and Mac App Store expectations.
 - #7 must validate overlay behavior in the same distribution modes.
-- #16 should own the eventual minimal settings/setup UI, including the change-shortcut affordance for registration failures.
-- Track per-macOS-release changes to hot-key behavior (e.g. the Sequoia Shift/Option restriction and its 15.2 relaxation) as part of release QA.
+- #16 owns separate Input Monitoring and Accessibility readiness/recovery UI.
+- Track per-macOS-release changes to event-tap permission and modifier-event
+  behavior as part of release QA.
 
 ## Sources
 
