@@ -19,6 +19,7 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
         let sourceWindowFrame: ScreenRectangle
         let element: AccessibilityElementHandle
         let window: AccessibilityElementHandle
+        var bindingOrigins: Set<SelectionBindingOrigin>
     }
 
     private let client: any MacOSAccessibilityClient
@@ -103,7 +104,8 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             try engine.validateBoundElement(
                 candidate.element,
                 requiredPID: pid_t(source.processIdentifier),
-                budget: ExtractionBudget(limits: limits)
+                budget: ExtractionBudget(limits: limits),
+                requiresFocus: true
             )
             guard !secureInputEnabled() else {
                 return .rejected(.secureInputUnsupported)
@@ -121,7 +123,8 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
                 sessionIdentity: sessionIdentity,
                 source: source,
                 sourceWindowFrame: sourceWindowFrame,
-                window: sourceWindow
+                window: sourceWindow,
+                bindingOrigin: .keyboardCaret
             )
             return .captured(
                 GridCaretCandidate(
@@ -220,7 +223,8 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             try engine.validateBoundElement(
                 candidate.element,
                 requiredPID: pid_t(sourceContext.source.processIdentifier),
-                budget: ExtractionBudget(limits: limits)
+                budget: ExtractionBudget(limits: limits),
+                requiresFocus: false
             )
             guard !secureInputEnabled() else {
                 return .rejected(.secureInputUnsupported)
@@ -245,7 +249,8 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
                 sessionIdentity: sourceContext.sessionIdentity,
                 source: sourceContext.source,
                 sourceWindowFrame: sourceContext.sourceWindowFrame,
-                window: sourceWindow
+                window: sourceWindow,
+                bindingOrigin: .mouseHit
             )
             return .resolved(
                 GridMouseAnchorCandidate(
@@ -307,7 +312,8 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
                 rectangle: rectangle,
                 display: boundContext.display,
                 from: entry.element,
-                requiredPID: pid_t(boundContext.source.processIdentifier)
+                requiredPID: pid_t(boundContext.source.processIdentifier),
+                requiresFocus: boundContext.bindingOrigin == .keyboardCaret
             )
         }
         let text: String
@@ -381,7 +387,8 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             try engine.validateBoundElement(
                 entry.element,
                 requiredPID: pid_t(boundContext.source.processIdentifier),
-                budget: ExtractionBudget(limits: limits)
+                budget: ExtractionBudget(limits: limits),
+                requiresFocus: boundContext.bindingOrigin == .keyboardCaret
             )
         } catch is SelectionPermissionRequiredError {
             throw SelectionPermissionRequiredError()
@@ -428,7 +435,8 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
         sessionIdentity: SelectionSessionIdentity?,
         source: SelectionSourceIdentity,
         sourceWindowFrame: ScreenRectangle,
-        window: AccessibilityElementHandle
+        window: AccessibilityElementHandle,
+        bindingOrigin: SelectionBindingOrigin
     ) -> SelectionElementIdentity {
         lock.withLock {
             if let sessionIdentity,
@@ -438,6 +446,9 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
                        && client.isSameElement($0.value.element, element)
                })
             {
+                var entry = existing.value
+                entry.bindingOrigins.insert(bindingOrigin)
+                entries[existing.key] = entry
                 return existing.key
             }
             nextIdentity &+= 1
@@ -452,7 +463,8 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
                 source: source,
                 sourceWindowFrame: sourceWindowFrame,
                 element: element,
-                window: window
+                window: window,
+                bindingOrigins: [bindingOrigin]
             )
             return identity
         }
@@ -470,6 +482,7 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             && entry.sessionIdentity == context.sessionIdentity
             && entry.source == context.source
             && entry.sourceWindowFrame == context.sourceWindowFrame
+            && entry.bindingOrigins.contains(context.bindingOrigin)
     }
 
     private func window(
@@ -600,9 +613,16 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             }
             let end = start + length
             if location >= start && location <= end {
+                let leadingVisualOffset = max(
+                    0,
+                    line.text.utf16.count - length
+                )
                 return GridBoundary(
                     row: row,
-                    column: min(max(0, location - start), line.text.utf16.count)
+                    column: min(
+                        leadingVisualOffset + max(0, location - start),
+                        line.text.utf16.count
+                    )
                 )
             }
         }
@@ -621,7 +641,15 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
         guard !lines[boundary.row].text.contains("\t") else {
             return location..<location
         }
-        let offset = min(max(0, boundary.column), lines[boundary.row].text.utf16.count)
+        let sourceLength = lines[boundary.row].sourceLength ?? 0
+        let leadingVisualOffset = max(
+            0,
+            lines[boundary.row].text.utf16.count - sourceLength
+        )
+        let offset = min(
+            max(0, boundary.column - leadingVisualOffset),
+            sourceLength
+        )
         let value = location + offset
         return value..<value
     }
