@@ -1063,7 +1063,7 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
             barrier.entered.signal()
             _ = barrier.release.wait(timeout: .now() + 2)
         }
-        focused
+        return focused
     }
 
     func parent(of element: AccessibilityElementHandle) -> AccessibilityElementHandle? {
