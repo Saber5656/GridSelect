@@ -402,6 +402,38 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         }
     }
 
+    func testLeafTextWithoutAXChildrenAttributeStillExtracts() throws {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("leaf", pid: 10)
+        client.configureMonospace(text, lines: ["abcdef"])
+        client.hitTested = text
+        client.childCountUnavailableIDs.insert("leaf")
+
+        let output = try engine(client).extract(
+            rectangle: selection,
+            display: display
+        )
+
+        XCTAssertEqual(output, "abcd")
+    }
+
+    func testAXChildrenOperationalFailurePreventsExtraction() {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("failed-children", pid: 10)
+        client.configureMonospace(text, lines: ["abcdef"])
+        client.hitTested = text
+        client.childCountFailureIDs.insert("failed-children")
+
+        XCTAssertThrowsError(
+            try engine(client).extract(rectangle: selection, display: display)
+        ) { error in
+            XCTAssertEqual(
+                error as? MacOSAccessibilityExtractionError,
+                .resourceLimitExceeded
+            )
+        }
+    }
+
     @MainActor
     func testCaretBindingExtractsFromExactElementWithoutCopyTimeHitTest() async throws {
         let client = FakeAccessibilityClient()
@@ -630,6 +662,18 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         default:
             return XCTFail("Expected mouse target binding without focus")
         }
+        XCTAssertEqual(client.hitTestMessagingTimeouts.count, 1)
+        XCTAssertGreaterThan(client.hitTestMessagingTimeouts[0], 0)
+        guard case let .resolved(duplicateMouse) = service.resolveMouseAnchor(
+            at: SelectionPoint(x: 110, y: 940),
+            sourceContext: sourceContext
+        ) else {
+            return XCTFail("Expected duplicate mouse target binding")
+        }
+        XCTAssertEqual(duplicateMouse.element, mouse.element)
+        XCTAssertEqual(service.registeredContextCount, 1)
+        service.discardMouseAnchor(duplicateMouse, sourceContext: sourceContext)
+        XCTAssertEqual(service.registeredContextCount, 1)
         var binder = GridSelectionContextBinder(activationContext: sourceContext)
         guard case let .bound(bound) = binder.bindMouseAnchor(
             source: mouse.source,
@@ -647,6 +691,8 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         try await service.validateCopyAuthorization(for: bound)
         XCTAssertGreaterThan(client.textReadsByElement["target", default: 0], 0)
         XCTAssertEqual(client.textReadsByElement["focused-elsewhere", default: 0], 0)
+        service.discardMouseAnchor(mouse, sourceContext: sourceContext)
+        XCTAssertEqual(service.registeredContextCount, 0)
     }
 
     @MainActor
@@ -799,6 +845,8 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         XCTAssertEqual(mouse.element, caret.element)
         XCTAssertEqual(caret.sourceRange, 1..<1)
         XCTAssertEqual(mouse.sourceRange, 1..<1)
+        XCTAssertEqual(service.registeredContextCount, 1)
+        service.discardMouseAnchor(mouse, sourceContext: context)
         XCTAssertEqual(service.registeredContextCount, 1)
     }
 
@@ -1133,10 +1181,13 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
     var pidUnavailableIDs: Set<String> = []
     var supportsSingleCharacterBounds = true
     var forcedChildCount: Int?
+    var childCountUnavailableIDs: Set<String> = []
+    var childCountFailureIDs: Set<String> = []
     private(set) var textReadCount = 0
     private(set) var boundsReadCount = 0
     private(set) var textReadsByElement: [String: Int] = [:]
     private(set) var hitTestCallCount = 0
+    private(set) var hitTestMessagingTimeouts: [Float] = []
 
     func addElement(
         _ id: String,
@@ -1213,9 +1264,11 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
 
     func hitTestedElement(
         at point: CGPoint,
-        inProcess processIdentifier: pid_t?
+        inProcess processIdentifier: pid_t?,
+        messagingTimeout: Float
     ) -> AccessibilityElementHandle? {
         hitTestCallCount += 1
+        hitTestMessagingTimeouts.append(messagingTimeout)
         return hitTested
     }
     func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle? {
@@ -1233,20 +1286,27 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
         return AccessibilityElementHandle(testIdentifier: parentID)
     }
 
-    func childCount(of element: AccessibilityElementHandle) -> Int? {
-        forcedChildCount ?? elements[id(element)]?.childIDs.count
-    }
-
-    func children(
+    func boundedChildren(
         of element: AccessibilityElementHandle,
         limit: Int
-    ) -> [AccessibilityElementHandle]? {
-        guard let identifiers = elements[id(element)]?.childIDs,
-              identifiers.count <= limit
-        else {
-            return nil
+    ) -> AccessibilityChildrenResult {
+        let identifier = id(element)
+        if childCountUnavailableIDs.contains(identifier) {
+            return .unsupported
         }
-        return identifiers.map(AccessibilityElementHandle.init(testIdentifier:))
+        if childCountFailureIDs.contains(identifier) {
+            return .failed
+        }
+        guard let identifiers = elements[id(element)]?.childIDs,
+              let count = forcedChildCount ?? Optional(identifiers.count),
+              count <= limit,
+              identifiers.count == count
+        else {
+            return .failed
+        }
+        return .available(
+            identifiers.map(AccessibilityElementHandle.init(testIdentifier:))
+        )
     }
 
     func window(of element: AccessibilityElementHandle) -> AccessibilityElementHandle? {
