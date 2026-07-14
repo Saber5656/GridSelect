@@ -510,10 +510,10 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
         guard let windowCount = client.windowCount(
             inProcess: pid_t(source.processIdentifier)
         ),
-        windowCount <= limits.maximumCandidates,
+        windowCount <= limits.maximumWindowsPerProcess,
         let windows = client.windows(
             inProcess: pid_t(source.processIdentifier),
-            limit: limits.maximumCandidates
+            limit: limits.maximumWindowsPerProcess
         ),
         windows.count == windowCount
         else {

@@ -100,6 +100,7 @@ protocol MacOSAccessibilityClient: Sendable {
 struct AccessibilityExtractionLimits: Equatable, Sendable {
     let maximumVisibleCharacters: Int
     let maximumCandidates: Int
+    let maximumWindowsPerProcess: Int
     let maximumVisualLines: Int
     let maximumWidthSamplesPerLine: Int
     let maximumAXCalls: Int
@@ -109,6 +110,7 @@ struct AccessibilityExtractionLimits: Equatable, Sendable {
     init(
         maximumVisibleCharacters: Int = 20_000,
         maximumCandidates: Int = 10,
+        maximumWindowsPerProcess: Int = 256,
         maximumVisualLines: Int = 256,
         maximumWidthSamplesPerLine: Int = 8,
         maximumAXCalls: Int = 2_500,
@@ -117,6 +119,7 @@ struct AccessibilityExtractionLimits: Equatable, Sendable {
     ) {
         self.maximumVisibleCharacters = max(1, maximumVisibleCharacters)
         self.maximumCandidates = max(1, maximumCandidates)
+        self.maximumWindowsPerProcess = max(1, maximumWindowsPerProcess)
         self.maximumVisualLines = max(1, maximumVisualLines)
         self.maximumWidthSamplesPerLine = max(1, maximumWidthSamplesPerLine)
         self.maximumAXCalls = max(1, maximumAXCalls)
@@ -273,29 +276,6 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             }
             return (locations.min() ?? 0)..<(ends.max() ?? 0)
         }
-    }
-
-    func focusedCandidate(requiredPID: pid_t) throws -> BoundCandidate {
-        guard client.isTrusted else {
-            throw SelectionPermissionRequiredError()
-        }
-        guard let focused = client.focusedElement(inProcess: requiredPID) else {
-            throw MacOSAccessibilityExtractionError.noTextCandidate
-        }
-        return try candidate(startingAt: focused, requiredPID: requiredPID)
-    }
-
-    func hitTestedCandidate(at point: CGPoint, requiredPID: pid_t) throws -> BoundCandidate {
-        guard client.isTrusted else {
-            throw SelectionPermissionRequiredError()
-        }
-        guard let hit = client.hitTestedElement(
-            at: point,
-            inProcess: requiredPID
-        ) else {
-            throw MacOSAccessibilityExtractionError.noTextCandidate
-        }
-        return try candidate(startingAt: hit, requiredPID: requiredPID)
     }
 
     func selectedTextRange(of element: AccessibilityElementHandle) throws -> CFRange {
