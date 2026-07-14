@@ -6,32 +6,57 @@ enum MacOSSelectionOverlayError: Error, Equatable {
     case noScreensAvailable
 }
 
-@MainActor
-protocol MacOSGridMouseAnchorResolving: AnyObject {
+protocol MacOSGridMouseAnchorResolving: AnyObject, Sendable {
     func resolveMouseAnchor(
         at appKitScreenPoint: SelectionPoint,
         sourceContext: ActivationSourceContext
     ) -> MacOSGridMouseAnchorResolution
+
+    func discardMouseAnchor(
+        _ candidate: GridMouseAnchorCandidate,
+        sourceContext: ActivationSourceContext
+    )
 }
 
-enum MacOSGridMouseAnchorResolution: Equatable {
+enum MacOSGridMouseAnchorResolution: Equatable, Sendable {
     case resolved(GridMouseAnchorCandidate)
     case unavailable
     case rejected(SelectionSourceFailure)
 }
 
-@MainActor
-private final class UnavailableGridMouseAnchorResolver: MacOSGridMouseAnchorResolving {
+private final class UnavailableGridMouseAnchorResolver:
+    MacOSGridMouseAnchorResolving,
+    @unchecked Sendable
+{
     func resolveMouseAnchor(
         at appKitScreenPoint: SelectionPoint,
         sourceContext: ActivationSourceContext
     ) -> MacOSGridMouseAnchorResolution {
         .unavailable
     }
+
+    func discardMouseAnchor(
+        _ candidate: GridMouseAnchorCandidate,
+        sourceContext: ActivationSourceContext
+    ) {}
 }
 
 @MainActor
 final class MacOSSelectionOverlay: SelectionOverlayPresenting {
+    private struct PendingMouseResolution {
+        let requestID: UInt64
+        let sessionGeneration: UInt64
+        let displayID: UInt32
+        let anchorPoint: SelectionPoint
+        var latestPoint: SelectionPoint
+        var ended: Bool
+    }
+
+    private struct IgnoredMouseGesture {
+        let sessionGeneration: UInt64
+        let displayID: UInt32
+    }
+
     private let minimumSelectionSize: Double
     private let panelLevel: NSWindow.Level
     private let mouseAnchorResolver: any MacOSGridMouseAnchorResolving
@@ -49,6 +74,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     private var frozenRectangle: SelectionRectangle?
     private var sourceContext: ActivationSourceContext?
     private var gridInteraction: GridOverlayInteraction?
+    private var nextMouseResolutionID: UInt64 = 0
+    private var pendingMouseResolution: PendingMouseResolution?
+    private var ignoredMouseGesture: IgnoredMouseGesture?
+    private var mouseResolutionTask: Task<Void, Never>?
     private var sessionGuard = GridOverlaySessionGuard()
 
     init(
@@ -441,6 +470,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     }
 
     private func cleanup() {
+        mouseResolutionTask?.cancel()
+        mouseResolutionTask = nil
+        pendingMouseResolution = nil
+        ignoredMouseGesture = nil
         if let localKeyMonitor {
             NSEvent.removeMonitor(localKeyMonitor)
             self.localKeyMonitor = nil
@@ -518,47 +551,148 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         guard let sourceContext else {
             return
         }
-        let resolution = mouseAnchorResolver.resolveMouseAnchor(
-                  at: point,
-                  sourceContext: sourceContext
-              )
+        guard pendingMouseResolution == nil else {
+            ignoredMouseGesture = IgnoredMouseGesture(
+                sessionGeneration: sessionGeneration,
+                displayID: displayID
+            )
+            return
+        }
+        nextMouseResolutionID &+= 1
+        if nextMouseResolutionID == 0 {
+            nextMouseResolutionID = 1
+        }
+        let requestID = nextMouseResolutionID
+        pendingMouseResolution = PendingMouseResolution(
+            requestID: requestID,
+            sessionGeneration: sessionGeneration,
+            displayID: displayID,
+            anchorPoint: point,
+            latestPoint: point,
+            ended: false
+        )
+        let resolver = mouseAnchorResolver
+        mouseResolutionTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard !Task.isCancelled else {
+                return
+            }
+            let resolution = resolver.resolveMouseAnchor(
+                at: point,
+                sourceContext: sourceContext
+            )
+            if Task.isCancelled {
+                if case let .resolved(candidate) = resolution {
+                    resolver.discardMouseAnchor(
+                        candidate,
+                        sourceContext: sourceContext
+                    )
+                }
+                return
+            }
+            let applied = await self?.applyMouseAnchorResolution(
+                resolution,
+                requestID: requestID
+            ) ?? false
+            if !applied, case let .resolved(candidate) = resolution {
+                resolver.discardMouseAnchor(
+                    candidate,
+                    sourceContext: sourceContext
+                )
+            }
+        }
+    }
+
+    private func applyMouseAnchorResolution(
+        _ resolution: MacOSGridMouseAnchorResolution,
+        requestID: UInt64
+    ) -> Bool {
+        guard let pending = pendingMouseResolution,
+              pending.requestID == requestID,
+              sessionGuard.isCurrent(pending.sessionGeneration)
+        else {
+            return false
+        }
+        pendingMouseResolution = nil
+        mouseResolutionTask = nil
         let candidate: GridMouseAnchorCandidate
         switch resolution {
         case let .resolved(value):
             candidate = value
         case .unavailable:
-            return
+            return true
         case let .rejected(failure):
-            finish(with: .sourceFailed(failure), ifCurrent: sessionGeneration)
-            return
+            finish(with: .sourceFailed(failure), ifCurrent: pending.sessionGeneration)
+            return true
         }
-        guard candidate.viewport.displayID == displayID,
+        guard candidate.viewport.displayID == pending.displayID,
               makeOwningPanelKey(
-                  displayID: displayID,
-                  sessionGeneration: sessionGeneration
+                  displayID: pending.displayID,
+                  sessionGeneration: pending.sessionGeneration
               ),
               var interaction = gridInteraction
         else {
-            finish(with: .cancelled, ifCurrent: sessionGeneration)
-            return
+            finish(with: .cancelled, ifCurrent: pending.sessionGeneration)
+            return false
         }
-        let result = interaction.beginMouseSelection(candidate: candidate, at: point)
+        let result = interaction.beginMouseSelection(
+            candidate: candidate,
+            at: pending.anchorPoint
+        )
         gridInteraction = interaction
         switch result {
         case let .accepted(effect):
             _ = sessionGuard.beginMouseDrag(
-                displayID: displayID,
-                generation: sessionGeneration
+                displayID: pending.displayID,
+                generation: pending.sessionGeneration
             )
             applyGridEffect(effect)
+            if pending.latestPoint != pending.anchorPoint {
+                applyGridMouseFocus(
+                    to: pending.latestPoint,
+                    displayID: pending.displayID,
+                    sessionGeneration: pending.sessionGeneration
+                )
+            }
+            if pending.ended {
+                freezeGridSelection()
+                sessionGuard.endMouseDrag(generation: pending.sessionGeneration)
+            }
         case .ignored:
-            break
+            return false
         case .rejected:
-            finish(with: .cancelled, ifCurrent: sessionGeneration)
+            finish(with: .cancelled, ifCurrent: pending.sessionGeneration)
+            return false
         }
+        return true
     }
 
     private func moveGridMouseSelection(
+        to point: SelectionPoint,
+        displayID: UInt32,
+        sessionGeneration: UInt64
+    ) {
+        if let ignored = ignoredMouseGesture,
+           ignored.sessionGeneration == sessionGeneration,
+           ignored.displayID == displayID
+        {
+            return
+        }
+        if var pending = pendingMouseResolution,
+           pending.sessionGeneration == sessionGeneration,
+           pending.displayID == displayID
+        {
+            pending.latestPoint = point
+            pendingMouseResolution = pending
+            return
+        }
+        applyGridMouseFocus(
+            to: point,
+            displayID: displayID,
+            sessionGeneration: sessionGeneration
+        )
+    }
+
+    private func applyGridMouseFocus(
         to point: SelectionPoint,
         displayID: UInt32,
         sessionGeneration: UInt64
@@ -583,6 +717,22 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         displayID: UInt32,
         sessionGeneration: UInt64
     ) {
+        if let ignored = ignoredMouseGesture,
+           ignored.sessionGeneration == sessionGeneration,
+           ignored.displayID == displayID
+        {
+            ignoredMouseGesture = nil
+            return
+        }
+        if var pending = pendingMouseResolution,
+           pending.sessionGeneration == sessionGeneration,
+           pending.displayID == displayID
+        {
+            pending.latestPoint = point
+            pending.ended = true
+            pendingMouseResolution = pending
+            return
+        }
         guard sessionGuard.acceptsMouseEvent(
                   displayID: displayID,
                   generation: sessionGeneration

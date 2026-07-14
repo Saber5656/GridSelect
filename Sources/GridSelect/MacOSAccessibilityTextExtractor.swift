@@ -63,18 +63,26 @@ final class AccessibilityElementHandle: @unchecked Sendable {
     }
 }
 
+enum AccessibilityChildrenResult: @unchecked Sendable {
+    case available([AccessibilityElementHandle])
+    case unsupported
+    case failed
+}
+
 protocol MacOSAccessibilityClient: Sendable {
     var isTrusted: Bool { get }
 
-    func hitTestedElement(at point: CGPoint, inProcess processIdentifier: pid_t?)
-        -> AccessibilityElementHandle?
+    func hitTestedElement(
+        at point: CGPoint,
+        inProcess processIdentifier: pid_t?,
+        messagingTimeout: Float
+    ) -> AccessibilityElementHandle?
     func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle?
     func parent(of element: AccessibilityElementHandle) -> AccessibilityElementHandle?
-    func childCount(of element: AccessibilityElementHandle) -> Int?
-    func children(
+    func boundedChildren(
         of element: AccessibilityElementHandle,
         limit: Int
-    ) -> [AccessibilityElementHandle]?
+    ) -> AccessibilityChildrenResult
     func window(of element: AccessibilityElementHandle) -> AccessibilityElementHandle?
     func windowCount(inProcess processIdentifier: pid_t) -> Int?
     func windows(
@@ -157,7 +165,11 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             y: canonical.minY + (canonical.height / 2)
         )
         try budget.check()
-        let hitTested = client.hitTestedElement(at: center, inProcess: nil)
+        let hitTested = client.hitTestedElement(
+            at: center,
+            inProcess: nil,
+            messagingTimeout: limits.perMessageTimeout
+        )
         try budget.check()
         let focused = client.focusedElement(inProcess: nil)
 
@@ -675,16 +687,10 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
     ) throws {
         try budget.check()
         client.setMessagingTimeout(limits.perMessageTimeout, for: element)
-        guard let rootChildCount = client.childCount(of: element),
-              rootChildCount <= limits.maximumCandidates,
-              let rootChildren = client.children(
-                  of: element,
-                  limit: limits.maximumCandidates
-              ),
-              rootChildren.count == rootChildCount
-        else {
-            throw MacOSAccessibilityExtractionError.resourceLimitExceeded
-        }
+        let rootChildren = try boundedChildren(
+            of: element,
+            limit: limits.maximumCandidates
+        )
         try budget.check()
         var pending = rootChildren
         var visited: [AccessibilityElementHandle] = []
@@ -702,16 +708,26 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
                 throw MacOSAccessibilityExtractionError.secureTextElement
             }
             let remaining = limits.maximumCandidates - visited.count - pending.count
-            guard remaining >= 0,
-                  let childCount = client.childCount(of: candidate),
-                  childCount <= remaining,
-                  let children = client.children(of: candidate, limit: remaining),
-                  children.count == childCount
-            else {
+            guard remaining >= 0 else {
                 throw MacOSAccessibilityExtractionError.resourceLimitExceeded
             }
+            let children = try boundedChildren(of: candidate, limit: remaining)
             try budget.check()
             pending.append(contentsOf: children)
+        }
+    }
+
+    private func boundedChildren(
+        of element: AccessibilityElementHandle,
+        limit: Int
+    ) throws -> [AccessibilityElementHandle] {
+        switch client.boundedChildren(of: element, limit: limit) {
+        case let .available(children):
+            return children
+        case .unsupported:
+            return []
+        case .failed:
+            throw MacOSAccessibilityExtractionError.resourceLimitExceeded
         }
     }
 
@@ -967,10 +983,14 @@ struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
 
     func hitTestedElement(
         at point: CGPoint,
-        inProcess processIdentifier: pid_t?
+        inProcess processIdentifier: pid_t?,
+        messagingTimeout: Float
     ) -> AccessibilityElementHandle? {
         let root = processIdentifier.map(AXUIElementCreateApplication)
             ?? AXUIElementCreateSystemWide()
+        guard AXUIElementSetMessagingTimeout(root, messagingTimeout) == .success else {
+            return nil
+        }
         var element: AXUIElement?
         guard AXUIElementCopyElementAtPosition(
             root,
@@ -1006,44 +1026,44 @@ struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
         return AccessibilityElementHandle(rawElement: value as! AXUIElement)
     }
 
-    func childCount(of element: AccessibilityElementHandle) -> Int? {
-        guard let rawElement = element.rawElement else {
-            return nil
+    func boundedChildren(
+        of element: AccessibilityElementHandle,
+        limit: Int
+    ) -> AccessibilityChildrenResult {
+        guard let rawElement = element.rawElement, limit >= 0 else {
+            return .failed
         }
         var count: CFIndex = 0
-        guard AXUIElementGetAttributeValueCount(
+        let countResult = AXUIElementGetAttributeValueCount(
             rawElement,
             kAXChildrenAttribute as CFString,
             &count
-        ) == .success else {
-            return nil
+        )
+        if countResult == .attributeUnsupported || countResult == .noValue {
+            return .unsupported
         }
-        return count >= 0 ? count : nil
-    }
-
-    func children(
-        of element: AccessibilityElementHandle,
-        limit: Int
-    ) -> [AccessibilityElementHandle]? {
-        guard let rawElement = element.rawElement, limit >= 0 else {
-            return nil
+        guard countResult == .success, count >= 0, count <= limit else {
+            return .failed
         }
-        if limit == 0 {
-            return []
+        if count == 0 {
+            return .available([])
         }
         var values: CFArray?
         guard AXUIElementCopyAttributeValues(
             rawElement,
             kAXChildrenAttribute as CFString,
             0,
-            limit,
+            count,
             &values
         ) == .success,
-        let values = values as? [AXUIElement]
+        let values = values as? [AXUIElement],
+        values.count == count
         else {
-            return nil
+            return .failed
         }
-        return values.map(AccessibilityElementHandle.init(rawElement:))
+        return .available(
+            values.map(AccessibilityElementHandle.init(rawElement:))
+        )
     }
 
     func window(of element: AccessibilityElementHandle) -> AccessibilityElementHandle? {
