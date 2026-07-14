@@ -152,7 +152,9 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
                 accessibilityService: nil
             ) else {
                 cancelHandoff(for: activation, reason: .setupFailed)
-                eventHandler(.handoffCancelled(activation, .setupFailed))
+                eventHandler(
+                    .sourceCaptureFailed(activation, .sourceContextInvalid)
+                )
                 return
             }
             guard let accessibilityService else {
