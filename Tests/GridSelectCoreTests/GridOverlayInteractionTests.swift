@@ -201,7 +201,7 @@ final class GridOverlayInteractionTests: XCTestCase {
         )
     }
 
-    func testCancelAndCopyHandoffStopLaterCommands() {
+    func testCancelStopsHandoffAndCopyThenCancelProcessesInOrder() {
         var cancelled = GridOverlayInteraction(sourceContext: context(withCaret: true))
         XCTAssertEqual(
             cancelled.applyHandoffCommands([
@@ -219,10 +219,17 @@ final class GridOverlayInteractionTests: XCTestCase {
             .copyRequested,
             .cancelRequested,
         ])
-        XCTAssertEqual(effects.count, 3)
-        guard let last = effects.last, case .copyRequested = last else {
-            return XCTFail("Expected copy to stop replay")
+        guard effects.count == 4 else {
+            return XCTFail("Expected move, freeze, copy, and cancel effects")
         }
+        guard case .copyRequested = effects[2] else {
+            return XCTFail("Expected copy request before cancellation")
+        }
+        XCTAssertEqual(effects[3], .cancelled)
+        XCTAssertEqual(
+            copied.lifecycle.state,
+            .cancelled(copied.activation)
+        )
     }
 
     func testKeyboardCrossingAndLastRowRepeatRemainBounded() throws {

@@ -229,7 +229,7 @@ public struct GridOverlayInteraction: Equatable, Sendable {
                 effects.append(effect)
             }
             switch effect {
-            case .copyRequested, .cancelled:
+            case .cancelled:
                 return effects
             default:
                 break
