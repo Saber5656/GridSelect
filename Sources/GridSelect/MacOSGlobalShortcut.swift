@@ -288,18 +288,64 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
 @MainActor
 enum MacOSActivationSourceCapturer {
     private static var nextSessionIdentity: UInt64 = 0
+    private static var lastExternalApplication: NSRunningApplication?
+    private static var workspaceActivationObserver: NSObjectProtocol?
+
+    static func startTrackingExternalApplications() {
+        guard workspaceActivationObserver == nil else {
+            return
+        }
+        rememberIfExternal(NSWorkspace.shared.frontmostApplication)
+        workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication
+            Task { @MainActor in
+                rememberIfExternal(application)
+            }
+        }
+    }
+
+    static func preferredSourceProcessIdentifier(
+        frontmost: pid_t?,
+        current: pid_t,
+        lastExternal: pid_t?
+    ) -> pid_t? {
+        if let frontmost, frontmost > 0, frontmost != current {
+            return frontmost
+        }
+        guard let lastExternal, lastExternal > 0, lastExternal != current else {
+            return nil
+        }
+        return lastExternal
+    }
 
     static func capture(
         activation: GridActivation,
         accessibilityService: MacOSAccessibilitySelectionService? = nil
     ) -> ActivationSourceContext? {
-        guard let application = NSWorkspace.shared.frontmostApplication else {
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        rememberIfExternal(frontmostApplication)
+        let currentProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+        guard let processIdentifier = preferredSourceProcessIdentifier(
+            frontmost: frontmostApplication?.processIdentifier,
+            current: currentProcessIdentifier,
+            lastExternal: lastExternalApplication?.processIdentifier
+        ),
+              let application = application(
+                  processIdentifier: processIdentifier,
+                  frontmost: frontmostApplication
+              ),
+              !application.isTerminated,
+              let window = frontmostWindow(for: processIdentifier)
+        else {
             return nil
         }
-        let processIdentifier = application.processIdentifier
-        guard processIdentifier > 0,
-              processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              let window = frontmostWindow(for: processIdentifier)
+        guard !application.isTerminated,
+              application.processIdentifier == processIdentifier
         else {
             return nil
         }
@@ -372,6 +418,30 @@ enum MacOSActivationSourceCapturer {
             displays: displays,
             caretCandidate: caretCandidate
         )
+    }
+
+    private static func rememberIfExternal(_ application: NSRunningApplication?) {
+        guard let application,
+              application.processIdentifier > 0,
+              application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              !application.isTerminated
+        else {
+            return
+        }
+        lastExternalApplication = application
+    }
+
+    private static func application(
+        processIdentifier: pid_t,
+        frontmost: NSRunningApplication?
+    ) -> NSRunningApplication? {
+        if frontmost?.processIdentifier == processIdentifier {
+            return frontmost
+        }
+        guard lastExternalApplication?.processIdentifier == processIdentifier else {
+            return nil
+        }
+        return lastExternalApplication
     }
 
     private struct WindowSnapshot {

@@ -4,6 +4,34 @@ import XCTest
 
 @MainActor
 final class GridSelectApplicationControllerTests: XCTestCase {
+    func testManualSourcePrefersLastExternalApplicationWhenGridSelectIsFrontmost() {
+        XCTAssertEqual(
+            MacOSActivationSourceCapturer.preferredSourceProcessIdentifier(
+                frontmost: 100,
+                current: 100,
+                lastExternal: 42
+            ),
+            42
+        )
+    }
+
+    func testManualSourceDoesNotReuseSelfOrInvalidCachedProcess() {
+        XCTAssertNil(
+            MacOSActivationSourceCapturer.preferredSourceProcessIdentifier(
+                frontmost: 100,
+                current: 100,
+                lastExternal: 100
+            )
+        )
+        XCTAssertNil(
+            MacOSActivationSourceCapturer.preferredSourceProcessIdentifier(
+                frontmost: 100,
+                current: 100,
+                lastExternal: 0
+            )
+        )
+    }
+
     func testShortcutRejectsUnboundConfirmationBeforeExtractionOrCopy() async {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
