@@ -55,6 +55,7 @@ final class GridSelectApplicationController {
         let accessibilityService = MacOSAccessibilitySelectionService()
         self.accessibilityService = accessibilityService
         self.statusModel = statusModel
+        MacOSActivationSourceCapturer.startTrackingExternalApplications()
         coordinator = SelectionModeCoordinator(
             shortcut: shortcut ?? MacOSGlobalShortcut(
                 accessibilityService: accessibilityService
