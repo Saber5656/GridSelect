@@ -141,6 +141,17 @@ final class GridActivationInputMachineTests: XCTestCase {
         XCTAssertNil(machine.completeHandoff(for: activation, timestamp: 1.61))
     }
 
+    func testExpiredGuardPassesOrdinaryKeyWhileCancellingHandoff() {
+        var machine = activatedMachine()
+        let activation = try! XCTUnwrap(machine.activeHandoff)
+
+        let result = machine.handleGuardedKeyDown(.other, timestamp: 1.61)
+
+        XCTAssertEqual(result.delivery, .passThrough)
+        XCTAssertEqual(result.effect, .handoffCancelled(activation, .timedOut))
+        XCTAssertNil(machine.completeHandoff(for: activation, timestamp: 1.61))
+    }
+
     func testExplicitExpiryCancelsWithoutAnotherInputEvent() {
         var machine = activatedMachine()
         let activation = try! XCTUnwrap(machine.activeHandoff)
