@@ -9,6 +9,23 @@ final class MacOSSelectionPermissionChecker: SelectionPermissionChecking {
 }
 
 @MainActor
+protocol PermissionSetupPresenting: AnyObject {
+    func presentPermissionSetup()
+}
+
+@MainActor
+final class MacOSPermissionSetupPresenter: PermissionSetupPresenting {
+    func presentPermissionSetup() {
+        NSApplication.shared.sendAction(
+            Selector(("showSettingsWindow:")),
+            to: nil,
+            from: nil
+        )
+        NSApplication.shared.requestUserAttention(.informationalRequest)
+    }
+}
+
+@MainActor
 final class GridSelectApplicationController {
     let statusModel: GridSelectStatusModel
 
@@ -18,11 +35,13 @@ final class GridSelectApplicationController {
         statusModel: GridSelectStatusModel? = nil,
         shortcut: (any SelectionShortcutRegistering)? = nil,
         permissionChecker: (any SelectionPermissionChecking)? = nil,
+        permissionSetupPresenter: (any PermissionSetupPresenting)? = nil,
         overlay: (any SelectionOverlayPresenting)? = nil,
         extractor: (any RectangularTextExtracting)? = nil,
         clipboard: (any ClipboardWriting)? = nil
     ) {
         let permissionChecker = permissionChecker ?? MacOSSelectionPermissionChecker()
+        let permissionSetupPresenter = permissionSetupPresenter ?? MacOSPermissionSetupPresenter()
         let statusModel = statusModel ?? GridSelectStatusModel(
             permissionStatus: permissionChecker.selectionPermissionStatus,
             permissionStatusProvider: {
@@ -39,6 +58,7 @@ final class GridSelectApplicationController {
             stateObserver: { [weak statusModel] state in
                 if state == .permissionRequired {
                     statusModel?.recheckPermission()
+                    permissionSetupPresenter.presentPermissionSetup()
                 }
                 statusModel?.updateSelectionState(state)
             }

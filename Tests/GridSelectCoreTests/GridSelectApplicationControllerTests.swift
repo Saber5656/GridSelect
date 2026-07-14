@@ -7,10 +7,12 @@ final class GridSelectApplicationControllerTests: XCTestCase {
     func testShortcutRunsOverlayExtractionFormattingCopyAndSuccessStatus() async {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
+        let permissionSetup = ApplicationPermissionSetupPresenterStub()
         let rectangle = SelectionRectangle(displayID: 1, x: 10, y: 20, width: 30, height: 40)
         let controller = GridSelectApplicationController(
             shortcut: shortcut,
             permissionChecker: ApplicationPermissionStub(status: .granted),
+            permissionSetupPresenter: permissionSetup,
             overlay: ApplicationOverlayStub(result: .confirmed(rectangle)),
             extractor: ApplicationExtractorStub(text: "alpha  \r\nbravo  \r\n"),
             clipboard: clipboard
@@ -27,6 +29,7 @@ final class GridSelectApplicationControllerTests: XCTestCase {
             controller.statusModel.snapshot.shortcutStatus,
             .active(displayName: "⌘⇧G")
         )
+        XCTAssertEqual(permissionSetup.presentationCount, 0)
     }
 
     func testPasteboardFailureSurfacesInStatusWithoutCrash() async {
@@ -103,9 +106,11 @@ final class GridSelectApplicationControllerTests: XCTestCase {
     func testMissingPermissionBlocksOverlayFromShortcut() async {
         let shortcut = ApplicationShortcutStub()
         let overlay = ApplicationOverlayStub(result: .cancelled)
+        let permissionSetup = ApplicationPermissionSetupPresenterStub()
         let controller = GridSelectApplicationController(
             shortcut: shortcut,
             permissionChecker: ApplicationPermissionStub(status: .required),
+            permissionSetupPresenter: permissionSetup,
             overlay: overlay,
             extractor: ApplicationExtractorStub(text: "unused"),
             clipboard: ApplicationClipboardStub()
@@ -117,15 +122,18 @@ final class GridSelectApplicationControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.statusModel.snapshot.selectionState, .permissionRequired)
         XCTAssertEqual(overlay.selectionCount, 0)
+        XCTAssertEqual(permissionSetup.presentationCount, 1)
     }
 
     func testRevokedPermissionSynchronizesStatusOnNextShortcut() async {
         let shortcut = ApplicationShortcutStub()
         let permission = ApplicationPermissionStub(status: .granted)
         let overlay = ApplicationOverlayStub(result: .cancelled)
+        let permissionSetup = ApplicationPermissionSetupPresenterStub()
         let controller = GridSelectApplicationController(
             shortcut: shortcut,
             permissionChecker: permission,
+            permissionSetupPresenter: permissionSetup,
             overlay: overlay,
             extractor: ApplicationExtractorStub(text: "unused"),
             clipboard: ApplicationClipboardStub()
@@ -140,6 +148,7 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusModel.snapshot.selectionState, .permissionRequired)
         XCTAssertEqual(controller.statusModel.snapshot.permissionStatus, .required)
         XCTAssertEqual(overlay.selectionCount, 0)
+        XCTAssertEqual(permissionSetup.presentationCount, 1)
     }
 
     func testShortcutRegistrationFailureIsSurfaced() {
@@ -201,6 +210,15 @@ private final class ApplicationPermissionStub: SelectionPermissionChecking {
 
     init(status: SelectionPermissionStatus) {
         selectionPermissionStatus = status
+    }
+}
+
+@MainActor
+private final class ApplicationPermissionSetupPresenterStub: PermissionSetupPresenting {
+    private(set) var presentationCount = 0
+
+    func presentPermissionSetup() {
+        presentationCount += 1
     }
 }
 
