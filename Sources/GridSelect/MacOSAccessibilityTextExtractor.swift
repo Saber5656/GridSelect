@@ -314,13 +314,24 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
         rectangle: SelectionRectangle,
         display: DisplayGeometry,
         from element: AccessibilityElementHandle,
-        requiredPID: pid_t
+        requiredPID: pid_t,
+        requiresFocus: Bool = true
     ) throws -> String {
         let budget = ExtractionBudget(limits: limits)
-        try validateBoundElement(element, requiredPID: requiredPID, budget: budget)
+        try validateBoundElement(
+            element,
+            requiredPID: requiredPID,
+            budget: budget,
+            requiresFocus: requiresFocus
+        )
         let value = try snapshot(from: element, budget: budget)
         try ensureNoSecureDescendants(of: element, budget: budget)
-        try validateBoundElement(element, requiredPID: requiredPID, budget: budget)
+        try validateBoundElement(
+            element,
+            requiredPID: requiredPID,
+            budget: budget,
+            requiresFocus: requiresFocus
+        )
         switch CoordinateGridMapper().map(
             selection: rectangle,
             display: display,
@@ -340,7 +351,8 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
     func validateBoundElement(
         _ element: AccessibilityElementHandle,
         requiredPID: pid_t,
-        budget: ExtractionBudget
+        budget: ExtractionBudget,
+        requiresFocus: Bool = true
     ) throws {
         guard client.isTrusted else {
             throw SelectionPermissionRequiredError()
@@ -353,6 +365,9 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             requiredPID: requiredPID,
             budget: budget
         )
+        guard requiresFocus else {
+            return
+        }
         guard let focused = client.focusedElement(inProcess: requiredPID),
               try candidateChain(
                   startingAt: focused,

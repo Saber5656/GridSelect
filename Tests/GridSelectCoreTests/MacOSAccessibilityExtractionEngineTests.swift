@@ -463,6 +463,24 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         guard case let .bound(context) = binder.bindKeyboardCaret() else {
             return XCTFail("Expected bound caret")
         }
+        let forgedMouseOrigin = BoundSelectionContext(
+            activation: context.activation,
+            sessionIdentity: context.sessionIdentity,
+            source: context.source,
+            sourceWindowFrame: context.sourceWindowFrame,
+            element: context.element,
+            anchor: context.anchor,
+            sourceRange: context.sourceRange,
+            display: context.display,
+            viewport: context.viewport,
+            bindingOrigin: .mouseHit
+        )
+        do {
+            _ = try await service.extractText(in: selection, boundContext: forgedMouseOrigin)
+            XCTFail("Expected unregistered binding-origin rejection")
+        } catch let error as SelectionSourceFailureError {
+            XCTAssertEqual(error.failure, .sourceContextInvalid)
+        }
         client.hitTested = replacement
 
         let output = try await service.extractText(in: selection, boundContext: context)
@@ -487,6 +505,105 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         } catch let error as SelectionSourceFailureError {
             XCTAssertEqual(error.failure, .sourceContextInvalid)
         }
+    }
+
+    @MainActor
+    func testHorizontallyScrolledCaretPreservesLeadingVisualColumns() {
+        let client = FakeAccessibilityClient()
+        let text = client.addElement("text", pid: 10)
+        let axWindow = client.addElement(
+            "window",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(axWindow, for: text)
+        client.configureMonospace(text, lines: ["abcdef"])
+        client.elements["text"]?.visibleRange = CFRange(location: 2, length: 4)
+        client.focused = text
+        client.selectedRange = CFRange(location: 2, length: 0)
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+
+        switch service.captureCaretCandidate(
+            activation: GridActivation(generation: 71),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 171),
+            source: SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+            displays: [display]
+        ) {
+        case let .captured(candidate):
+            XCTAssertEqual(candidate.anchor, GridBoundary(row: 0, column: 2))
+            XCTAssertEqual(candidate.sourceRange, 2..<2)
+            XCTAssertEqual(candidate.viewport?.originX, 100)
+        default:
+            XCTFail("Expected horizontally scrolled caret capture")
+        }
+    }
+
+    @MainActor
+    func testMouseBoundExtractionDoesNotDependOnFocusedElement() async throws {
+        let client = FakeAccessibilityClient()
+        let target = client.addElement("target", pid: 10)
+        let focusedElsewhere = client.addElement("focused-elsewhere", pid: 10)
+        let axWindow = client.addElement(
+            "window",
+            pid: 10,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 500),
+            role: kAXWindowRole as String
+        )
+        client.setWindow(axWindow, for: target)
+        client.setWindow(axWindow, for: focusedElsewhere)
+        client.configureMonospace(target, lines: ["target"])
+        client.configureMonospace(focusedElsewhere, lines: ["other"])
+        client.hitTested = target
+        client.focused = focusedElsewhere
+        let service = MacOSAccessibilitySelectionService(
+            client: client,
+            windowValidator: { _, _ in true },
+            secureInputEnabled: { false }
+        )
+        let activation = GridActivation(generation: 72)
+        let session = SelectionSessionIdentity(rawValue: 172)
+        let source = SelectionSourceIdentity(processIdentifier: 10, windowIdentifier: 4)
+        let sourceContext = ActivationSourceContext(
+            activation: activation,
+            sessionIdentity: session,
+            source: source,
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+            displays: [display],
+            caretCandidate: nil
+        )
+
+        let mouse: GridMouseAnchorCandidate
+        switch service.resolveMouseAnchor(
+            at: SelectionPoint(x: 110, y: 940),
+            sourceContext: sourceContext
+        ) {
+        case let .resolved(candidate):
+            mouse = candidate
+        default:
+            return XCTFail("Expected mouse target binding without focus")
+        }
+        var binder = GridSelectionContextBinder(activationContext: sourceContext)
+        guard case let .bound(bound) = binder.bindMouseAnchor(
+            source: mouse.source,
+            element: mouse.element,
+            anchor: GridBoundary(row: 0, column: 0),
+            sourceRange: mouse.sourceRange,
+            displayID: mouse.viewport.displayID,
+            viewport: mouse.viewport
+        ) else {
+            return XCTFail("Expected bound mouse context")
+        }
+
+        XCTAssertEqual(try await service.extractText(in: selection, boundContext: bound), "targ")
+        try await service.validateCopyAuthorization(for: bound)
+        XCTAssertGreaterThan(client.textReadsByElement["target", default: 0], 0)
+        XCTAssertEqual(client.textReadsByElement["focused-elsewhere", default: 0], 0)
     }
 
     @MainActor
