@@ -4,6 +4,98 @@ import XCTest
 
 @MainActor
 final class GridSelectApplicationControllerTests: XCTestCase {
+    func testStatusModelRechecksInputMonitoringAndAccessibilityIndependently() {
+        var inputStatus = SelectionPermissionStatus.required
+        var accessibilityStatus = SelectionPermissionStatus.required
+        let model = GridSelectStatusModel(
+            inputMonitoringStatus: .required,
+            permissionStatus: .required,
+            inputMonitoringStatusProvider: { inputStatus },
+            permissionStatusProvider: { accessibilityStatus }
+        )
+
+        inputStatus = .granted
+        model.recheckInputMonitoring()
+        XCTAssertEqual(model.snapshot.inputMonitoringStatus, .granted)
+        XCTAssertEqual(model.snapshot.permissionStatus, .required)
+
+        accessibilityStatus = .granted
+        model.recheckPermission()
+        XCTAssertEqual(model.snapshot.inputMonitoringStatus, .granted)
+        XCTAssertEqual(model.snapshot.permissionStatus, .granted)
+    }
+
+    func testInputMonitoringRecheckStopsAndRestartsListener() {
+        var inputStatus = SelectionPermissionStatus.granted
+        let statusModel = GridSelectStatusModel(
+            inputMonitoringStatus: .granted,
+            permissionStatus: .granted,
+            inputMonitoringStatusProvider: { inputStatus },
+            permissionStatusProvider: { .granted }
+        )
+        let shortcut = ApplicationShortcutStub()
+        let controller = GridSelectApplicationController(
+            statusModel: statusModel,
+            shortcut: shortcut,
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .cancelled),
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+
+        XCTAssertTrue(controller.start())
+        XCTAssertEqual(shortcut.registrationCount, 1)
+
+        inputStatus = .required
+        XCTAssertFalse(controller.recheckInputMonitoring())
+        XCTAssertEqual(statusModel.snapshot.inputMonitoringStatus, .required)
+        XCTAssertEqual(
+            statusModel.snapshot.shortcutStatus,
+            .inactive(displayName: "Double-Shift")
+        )
+        XCTAssertEqual(shortcut.unregisterCount, 1)
+
+        inputStatus = .granted
+        XCTAssertTrue(controller.recheckInputMonitoring())
+        XCTAssertEqual(statusModel.snapshot.inputMonitoringStatus, .granted)
+        XCTAssertEqual(
+            statusModel.snapshot.shortcutStatus,
+            .active(displayName: "Double-Shift")
+        )
+        XCTAssertEqual(shortcut.registrationCount, 2)
+    }
+
+    func testPermissionSetupPresenterUsesInstalledOpenSettingsAction() {
+        var modernOpenCount = 0
+        var legacyOpenCount = 0
+        var attentionCount = 0
+        let presenter = MacOSPermissionSetupPresenter(
+            legacyOpenSettingsAction: { legacyOpenCount += 1 },
+            requestUserAttentionAction: { attentionCount += 1 }
+        )
+        presenter.installOpenSettingsAction { modernOpenCount += 1 }
+
+        presenter.presentPermissionSetup()
+
+        XCTAssertEqual(modernOpenCount, 1)
+        XCTAssertEqual(legacyOpenCount, 0)
+        XCTAssertEqual(attentionCount, 1)
+    }
+
+    func testPermissionSetupPresenterFallsBackBeforeModernActionIsInstalled() {
+        var legacyOpenCount = 0
+        var attentionCount = 0
+        let presenter = MacOSPermissionSetupPresenter(
+            legacyOpenSettingsAction: { legacyOpenCount += 1 },
+            requestUserAttentionAction: { attentionCount += 1 }
+        )
+
+        presenter.presentPermissionSetup()
+
+        XCTAssertEqual(legacyOpenCount, 1)
+        XCTAssertEqual(attentionCount, 1)
+    }
+
     func testManualSourcePrefersLastExternalApplicationWhenGridSelectIsFrontmost() {
         XCTAssertEqual(
             MacOSActivationSourceCapturer.preferredSourceProcessIdentifier(
@@ -36,10 +128,12 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
         let permissionSetup = ApplicationPermissionSetupPresenterStub()
+        let permission = ApplicationPermissionStub(status: .granted)
         let rectangle = SelectionRectangle(displayID: 1, x: 10, y: 20, width: 30, height: 40)
         let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
             shortcut: shortcut,
-            permissionChecker: ApplicationPermissionStub(status: .granted),
+            permissionChecker: permission,
             permissionSetupPresenter: permissionSetup,
             overlay: ApplicationOverlayStub(result: .confirmed(rectangle)),
             extractor: ApplicationExtractorStub(text: "alpha  \r\nbravo  \r\n"),
@@ -67,10 +161,12 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
         clipboard.shouldFail = true
+        let permission = ApplicationPermissionStub(status: .granted)
         let rectangle = SelectionRectangle(displayID: 1, x: 10, y: 20, width: 30, height: 40)
         let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
             shortcut: shortcut,
-            permissionChecker: ApplicationPermissionStub(status: .granted),
+            permissionChecker: permission,
             overlay: ApplicationOverlayStub(result: .confirmed(rectangle)),
             extractor: ApplicationExtractorStub(text: "selected"),
             clipboard: clipboard
@@ -92,9 +188,11 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         let shortcut = ApplicationShortcutStub()
         let extractor = ApplicationExtractorStub(text: "unused")
         let clipboard = ApplicationClipboardStub()
+        let permission = ApplicationPermissionStub(status: .granted)
         let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
             shortcut: shortcut,
-            permissionChecker: ApplicationPermissionStub(status: .granted),
+            permissionChecker: permission,
             overlay: ApplicationOverlayStub(result: .cancelled),
             extractor: extractor,
             clipboard: clipboard
@@ -132,9 +230,11 @@ final class GridSelectApplicationControllerTests: XCTestCase {
             sourceRange: 0..<0,
             display: display
         )
+        let permission = ApplicationPermissionStub(status: .granted)
         let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
             shortcut: shortcut,
-            permissionChecker: ApplicationPermissionStub(status: .granted),
+            permissionChecker: permission,
             overlay: ApplicationOverlayStub(
                 result: .boundConfirmed(rectangle, boundContext)
             ),
@@ -160,9 +260,11 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         let shortcut = ApplicationShortcutStub()
         let overlay = ApplicationOverlayStub(result: .cancelled)
         let permissionSetup = ApplicationPermissionSetupPresenterStub()
+        let permission = ApplicationPermissionStub(status: .required)
         let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
             shortcut: shortcut,
-            permissionChecker: ApplicationPermissionStub(status: .required),
+            permissionChecker: permission,
             permissionSetupPresenter: permissionSetup,
             overlay: overlay,
             extractor: ApplicationExtractorStub(text: "unused"),
@@ -184,6 +286,7 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         let overlay = ApplicationOverlayStub(result: .cancelled)
         let permissionSetup = ApplicationPermissionSetupPresenterStub()
         let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
             shortcut: shortcut,
             permissionChecker: permission,
             permissionSetupPresenter: permissionSetup,
@@ -207,9 +310,11 @@ final class GridSelectApplicationControllerTests: XCTestCase {
     func testShortcutRegistrationFailureIsSurfaced() {
         let shortcut = ApplicationShortcutStub()
         shortcut.shouldFail = true
+        let permission = ApplicationPermissionStub(status: .granted)
         let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
             shortcut: shortcut,
-            permissionChecker: ApplicationPermissionStub(status: .granted),
+            permissionChecker: permission,
             overlay: ApplicationOverlayStub(result: .cancelled),
             extractor: ApplicationExtractorStub(text: "unused"),
             clipboard: ApplicationClipboardStub()
@@ -306,9 +411,11 @@ final class GridSelectApplicationControllerTests: XCTestCase {
 
     func testListenerDisableMarksShortcutInactive() {
         let shortcut = ApplicationShortcutStub()
+        let permission = ApplicationPermissionStub(status: .granted)
         let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
             shortcut: shortcut,
-            permissionChecker: ApplicationPermissionStub(status: .granted),
+            permissionChecker: permission,
             overlay: ApplicationOverlayStub(result: .cancelled),
             extractor: ApplicationExtractorStub(text: "unused"),
             clipboard: ApplicationClipboardStub()
@@ -332,6 +439,17 @@ final class GridSelectApplicationControllerTests: XCTestCase {
             await Task.yield()
         }
     }
+
+    private func deterministicStatusModel(
+        permission: ApplicationPermissionStub
+    ) -> GridSelectStatusModel {
+        GridSelectStatusModel(
+            inputMonitoringStatus: .granted,
+            permissionStatus: permission.selectionPermissionStatus,
+            inputMonitoringStatusProvider: { .granted },
+            permissionStatusProvider: { permission.selectionPermissionStatus }
+        )
+    }
 }
 
 private enum ApplicationTestError: Error {
@@ -341,6 +459,8 @@ private enum ApplicationTestError: Error {
 @MainActor
 private final class ApplicationShortcutStub: SelectionShortcutRegistering {
     var shouldFail = false
+    private(set) var registrationCount = 0
+    private(set) var unregisterCount = 0
     private var handler: (@MainActor @Sendable (SelectionShortcutEvent) -> Void)?
     private var nextGeneration: UInt64 = 0
 
@@ -348,10 +468,12 @@ private final class ApplicationShortcutStub: SelectionShortcutRegistering {
         _ handler: @escaping @MainActor @Sendable (SelectionShortcutEvent) -> Void
     ) throws {
         if shouldFail { throw ApplicationTestError.expected }
+        registrationCount += 1
         self.handler = handler
     }
 
     func unregister() {
+        unregisterCount += 1
         handler = nil
     }
 

@@ -15,13 +15,37 @@ protocol PermissionSetupPresenting: AnyObject {
 
 @MainActor
 final class MacOSPermissionSetupPresenter: PermissionSetupPresenting {
+    private var openSettingsAction: (@MainActor () -> Void)?
+    private let legacyOpenSettingsAction: @MainActor () -> Void
+    private let requestUserAttentionAction: @MainActor () -> Void
+
+    init(
+        legacyOpenSettingsAction: @escaping @MainActor () -> Void = {
+            NSApplication.shared.sendAction(
+                Selector(("showSettingsWindow:")),
+                to: nil,
+                from: nil
+            )
+        },
+        requestUserAttentionAction: @escaping @MainActor () -> Void = {
+            NSApplication.shared.requestUserAttention(.informationalRequest)
+        }
+    ) {
+        self.legacyOpenSettingsAction = legacyOpenSettingsAction
+        self.requestUserAttentionAction = requestUserAttentionAction
+    }
+
+    func installOpenSettingsAction(_ action: @escaping @MainActor () -> Void) {
+        openSettingsAction = action
+    }
+
     func presentPermissionSetup() {
-        NSApplication.shared.sendAction(
-            Selector(("showSettingsWindow:")),
-            to: nil,
-            from: nil
-        )
-        NSApplication.shared.requestUserAttention(.informationalRequest)
+        if let openSettingsAction {
+            openSettingsAction()
+        } else {
+            legacyOpenSettingsAction()
+        }
+        requestUserAttentionAction()
     }
 }
 
@@ -72,6 +96,7 @@ final class GridSelectApplicationController {
                     permissionSetupPresenter.presentPermissionSetup()
                 }
                 if state == .failed(.listenerDisabled) {
+                    statusModel?.recheckInputMonitoring()
                     statusModel?.updateShortcutStatus(
                         .inactive(displayName: MacOSGlobalShortcut.displayName)
                     )
@@ -83,7 +108,37 @@ final class GridSelectApplicationController {
 
     @discardableResult
     func start() -> Bool {
-        statusModel.recheckPermission()
+        statusModel.recheckPermissions()
+        return synchronizeShortcutWithInputMonitoring()
+    }
+
+    @discardableResult
+    func recheckInputMonitoring() -> Bool {
+        statusModel.recheckInputMonitoring()
+        return synchronizeShortcutWithInputMonitoring()
+    }
+
+    @discardableResult
+    func requestInputMonitoringAccess() -> Bool {
+        statusModel.requestInputMonitoringAccess()
+        return synchronizeShortcutWithInputMonitoring()
+    }
+
+    @discardableResult
+    func recheckPermissions() -> Bool {
+        statusModel.recheckPermissions()
+        return synchronizeShortcutWithInputMonitoring()
+    }
+
+    private func synchronizeShortcutWithInputMonitoring() -> Bool {
+        guard statusModel.snapshot.inputMonitoringStatus == .granted else {
+            coordinator.shutdown()
+            statusModel.updateShortcutStatus(
+                .inactive(displayName: MacOSGlobalShortcut.displayName)
+            )
+            return false
+        }
+
         let installed = coordinator.installShortcut()
         statusModel.updateShortcutStatus(
             installed
@@ -231,14 +286,24 @@ final class GridSelectApplicationController {
 
 @MainActor
 final class GridSelectAppDelegate: NSObject, NSApplicationDelegate {
-    let controller = GridSelectApplicationController()
+    let controller: GridSelectApplicationController
+    let permissionSetupPresenter: MacOSPermissionSetupPresenter
+
+    override init() {
+        let permissionSetupPresenter = MacOSPermissionSetupPresenter()
+        self.permissionSetupPresenter = permissionSetupPresenter
+        controller = GridSelectApplicationController(
+            permissionSetupPresenter: permissionSetupPresenter
+        )
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         controller.start()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        controller.statusModel.recheckPermission()
+        controller.recheckPermissions()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
