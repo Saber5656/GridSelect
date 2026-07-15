@@ -212,7 +212,8 @@ final class GridOverlayInteractionTests: XCTestCase {
         )
         XCTAssertNil(cancelled.currentRectangle)
 
-        var copied = GridOverlayInteraction(sourceContext: context(withCaret: true))
+        let copiedContext = context(withCaret: true)
+        var copied = GridOverlayInteraction(sourceContext: copiedContext)
         let effects = copied.applyHandoffCommands([
             .move(.right),
             .freeze,
@@ -228,7 +229,7 @@ final class GridOverlayInteractionTests: XCTestCase {
         XCTAssertEqual(effects[3], .cancelled)
         XCTAssertEqual(
             copied.lifecycle.state,
-            .cancelled(copied.activation)
+            .cancelled(copiedContext.activation)
         )
     }
 
