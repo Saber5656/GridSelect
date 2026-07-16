@@ -121,16 +121,17 @@ public struct GridOverlayInteraction: Equatable, Sendable {
             default:
                 mayReanchor = false
             }
-            guard mayReanchor,
-                  case .bound = binder.rebindMouseAnchor(
+            guard mayReanchor else {
+                return .ignored
+            }
+            guard case .bound = binder.rebindMouseAnchor(
                       source: candidate.source,
                       element: candidate.element,
                       anchor: anchor,
                       sourceRange: candidate.sourceRange,
                       displayID: candidate.viewport.displayID,
                       viewport: candidate.viewport
-                  )
-            else {
+                  ) else {
                 return .rejected
             }
         } else {
