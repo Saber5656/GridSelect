@@ -45,6 +45,11 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
     }
 
     public var statusTitle: String {
+        if case .inputMonitoringRequired = shortcutStatus,
+           selectionState == .failed(.shortcutRegistrationFailed)
+        {
+            return "Input Monitoring required"
+        }
         switch selectionState {
         case .selecting, .dragging, .confirmed, .extracting, .copying:
             return "Selection in progress"
@@ -77,6 +82,11 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
     }
 
     public var statusDetail: String {
+        if case .inputMonitoringRequired = shortcutStatus,
+           selectionState == .failed(.shortcutRegistrationFailed)
+        {
+            return Self.inputMonitoringGuidance
+        }
         switch selectionState {
         case .completed:
             return "The rectangular text selection was copied successfully."
