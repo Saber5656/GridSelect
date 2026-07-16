@@ -128,9 +128,11 @@ for the activation handoff:
   characters.
 - Match double-Shift and return original events unchanged outside the handoff.
 - Do not log modifier or key events. A coarse `gridModeEntered` diagnostic is enough.
-- If `CGEvent.tapCreate` returns `nil`, treat it as a missing permission or system
-  denial and move the UI into a "shortcut inactive" state. This is distinct from
-  the installed callback intentionally returning `nil` for a consumed guard event.
+- Use `CGPreflightListenEventAccess()` as the Input Monitoring permission gate.
+  If permission is available but `CGEvent.tapCreate` returns `nil`, treat it as an
+  input-listener setup failure, move the UI into “Input listener failed,” and
+  provide Recheck guidance. This remains distinct from the installed callback
+  intentionally returning `nil` for a consumed guard event.
 
 Double-Shift recognition uses the macOS system double-click interval rather than
 a hard-coded timing constant. It requires Shift down/up followed by a second

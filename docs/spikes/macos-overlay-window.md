@@ -142,7 +142,7 @@ State machine:
 | `inactive` | Valid double-Shift and permissions revalidated | Create a generation-tagged `armed` session bound to the captured source process; attempt a caret snapshot before showing the overlay. |
 | `armed` | Caret snapshot is supported and second Shift remains held | Record the caret boundary as immutable anchor, initialize focus at the same boundary (zero area), and enter `keyboardAdjusting`. |
 | `armed` | Caret snapshot is unsupported but source is otherwise eligible | Disable keyboard adjustment for this session, show actionable status, and keep first-click mouse selection available. |
-| `armed` | First mouse down inside the captured source process | Bind the clicked AX element/display, record the click anchor, and enter `dragging`. |
+| `armed` | First mouse down validates against the captured source window/geometry, click location, and a source-scoped AX hit test | Bind the hit AX element/display, record the click anchor, and enter `dragging`; otherwise remain armed. |
 | `keyboardAdjusting` | Left/Right while second Shift is held | Move the focus column boundary by one cell per event/repeat and redraw every included row. |
 | `keyboardAdjusting` | Up/Down while second Shift is held | Move the focus visual row by one while preserving the focus column, adding/removing an adjacent row cursor. |
 | `keyboardAdjusting` | Second Shift released | Freeze the current zero- or nonzero-width selection; do not copy. |
@@ -219,7 +219,13 @@ final class SelectionOverlayView: NSView {
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53: cancelSelection()  // Escape
-        case 8 where event.modifierFlags.contains(.command): copySelection() // Command-C
+        case 8 where event.modifierFlags.contains(.command): // Command-C
+            guard state == .selected, selection.columnCount > 0 else {
+                showActionableEmptySelectionStatus()
+                return
+            }
+            freezeCurrentGeneration()
+            copySelection()
         default: super.keyDown(with: event)
         }
     }
@@ -242,7 +248,7 @@ MVP behavior:
 
 | Command | Trigger | Result |
 |---|---|---|
-| Cancel | Escape, secondary click, or explicit cancel button if later added | Close all overlay panels and return `nil`. |
+| Cancel | Escape, secondary click, or explicit cancel button if later added | Consume the event, close every panel through the idempotent cleanup path, clear the current generation, and return `nil`. Secondary click never reaches the source app while the overlay owns input. |
 | Freeze | Shift release after keyboard adjustment, or mouse up after a drag | Keep the zero- or nonzero-width selection visible; do not mutate the clipboard. |
 | Copy | Command-C while a nonzero-width selection is frozen | Return `SelectionRect` to extraction/copy and close after success or terminal failure. |
 | Empty width | Command-C while the frozen column range is empty | Consume the command, retain the caret/multi-cursor overlay, leave the clipboard unchanged, and show actionable status. |

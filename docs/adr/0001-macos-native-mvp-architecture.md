@@ -93,9 +93,12 @@ matching-release tail expires 500 ms after the consumed key-down, is cleared on
 tap disablement, never decodes or stores characters, and passes unrelated or
 expired key-up events through unchanged. Timeout, overflow, another key, or
 setup failure cancels and discards the pending session. Inspected key/modifier
-values are never logged. The tap is disabled whenever GridSelect is not ready to
-use it. Grid-mode commands are handled locally by the overlay after caret
-capture. Carbon `Command-Shift-G` remains historical prototype evidence, not a
+values are never logged. Listener readiness means that Input Monitoring is
+available and the event tap has been installed successfully. The tap remains
+enabled while GridSelect is idle so it can detect the next double-Shift, and is
+disabled only when permission is unavailable, listener setup fails, macOS
+disables it, or teardown is required. Grid-mode commands are handled locally by
+the overlay after caret capture. Carbon `Command-Shift-G` remains historical prototype evidence, not a
 production fallback or advertised shortcut.
 
 The handoff queue has a fixed capacity of 32 ordered entries. Each guarded
