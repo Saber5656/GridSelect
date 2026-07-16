@@ -127,6 +127,8 @@ public struct GridSelectionLifecycle: Equatable, Sendable {
         switch state {
         case let .armed(current):
             activation = current
+        case let .adjusting(current, selection) where selection.isEmpty:
+            activation = current
         case let .selected(current, selection) where selection.isEmpty:
             activation = current
         default:

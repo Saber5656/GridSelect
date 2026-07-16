@@ -95,6 +95,20 @@ final class GridOverlayInteractionTests: XCTestCase {
         XCTAssertEqual(rectangle.width, 0)
     }
 
+    func testAdjustingZeroWidthMayReanchorWithinSameBoundElement() throws {
+        var interaction = GridOverlayInteraction(sourceContext: context(withCaret: true))
+
+        guard case .accepted = interaction.beginMouseSelection(
+            candidate: mouseCandidate(),
+            at: SelectionPoint(x: 145, y: 450)
+        ) else {
+            return XCTFail("Expected live zero-width caret to re-anchor")
+        }
+
+        XCTAssertEqual(interaction.binder.boundContext?.bindingOrigin, .mouseHit)
+        XCTAssertEqual(try XCTUnwrap(interaction.currentRectangle).width, 0)
+    }
+
     func testFrozenZeroWidthMayRebindToMouseHitTextElement() throws {
         var interaction = GridOverlayInteraction(sourceContext: context(withCaret: true))
         XCTAssertNotNil(interaction.freeze())
@@ -115,6 +129,7 @@ final class GridOverlayInteractionTests: XCTestCase {
 
         XCTAssertEqual(interaction.binder.boundContext?.element, mouseElement)
         XCTAssertEqual(interaction.binder.boundContext?.sourceRange, 8..<8)
+        XCTAssertEqual(interaction.binder.boundContext?.bindingOrigin, .mouseHit)
         XCTAssertEqual(try XCTUnwrap(interaction.currentRectangle).width, 0)
     }
 

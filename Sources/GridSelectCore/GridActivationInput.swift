@@ -177,14 +177,8 @@ public struct GridActivationInputMachine: Equatable, Sendable {
         if timestamp > current.deadline {
             handoff = nil
             gesturePhase = .idle
-            let delivery: GridInputDisposition.Delivery
-            if case .other = key {
-                delivery = .passThrough
-            } else {
-                delivery = .consume
-            }
             return GridInputDisposition(
-                delivery: delivery,
+                delivery: .passThrough,
                 effect: .handoffCancelled(current.activation, .timedOut)
             )
         }
@@ -225,6 +219,15 @@ public struct GridActivationInputMachine: Equatable, Sendable {
         }
         handoff = nil
         return current.commands
+    }
+
+    public mutating func completeHandoffAtDeadline(
+        for activation: GridActivation
+    ) -> [GridHandoffCommand]? {
+        guard let current = handoff, current.activation == activation else {
+            return nil
+        }
+        return completeHandoff(for: activation, timestamp: current.deadline)
     }
 
     public mutating func cancelHandoff(

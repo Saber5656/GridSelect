@@ -34,6 +34,7 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
     private var effectRelay: MacOSGridEventEffectRelay?
     private var timeoutTasks: [UInt64: Task<Void, Never>] = [:]
     private var sourceCaptureTasks: [UInt64: Task<Void, Never>] = [:]
+    private var fallbackHandoffCommands: [UInt64: [GridHandoffCommand]] = [:]
     private let accessibilityService: MacOSAccessibilitySelectionService?
 
     init(accessibilityService: MacOSAccessibilitySelectionService? = nil) {
@@ -93,6 +94,12 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
     }
 
     func completeHandoff(for activation: GridActivation) -> [GridHandoffCommand]? {
+        if let commands = fallbackHandoffCommands.removeValue(
+            forKey: activation.generation
+        ) {
+            cancelTimeout(for: activation)
+            return commands
+        }
         let commands = callbackContext?.completeHandoff(
             for: activation,
             timestamp: ProcessInfo.processInfo.systemUptime
@@ -107,6 +114,7 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         for activation: GridActivation,
         reason: GridActivationCancellationReason
     ) {
+        fallbackHandoffCommands.removeValue(forKey: activation.generation)
         callbackContext?.cancelHandoff(for: activation, reason: reason)
         cancelTimeout(for: activation)
         cancelSourceCapture(for: activation)
@@ -120,6 +128,7 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         timeoutTasks.removeAll()
         sourceCaptureTasks.values.forEach { $0.cancel() }
         sourceCaptureTasks.removeAll()
+        fallbackHandoffCommands.removeAll()
         callbackContext?.disable()
 
         if let runLoopSource {
@@ -146,7 +155,6 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         }
         switch effect {
         case let .activated(activation):
-            scheduleTimeout(for: activation)
             guard let sourceContext = MacOSActivationSourceCapturer.capture(
                 activation: activation,
                 accessibilityService: nil
@@ -158,6 +166,7 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
                 return
             }
             guard let accessibilityService else {
+                scheduleTimeout(for: activation, fallback: sourceContext)
                 eventHandler(.activated(sourceContext))
                 return
             }
@@ -217,6 +226,7 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
                 }
             }
             sourceCaptureTasks[activation.generation] = task
+            scheduleTimeout(for: activation, fallback: sourceContext)
         case let .handoffCancelled(activation, reason):
             cancelTimeout(for: activation)
             cancelSourceCapture(for: activation)
@@ -229,7 +239,10 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         }
     }
 
-    private func scheduleTimeout(for activation: GridActivation) {
+    private func scheduleTimeout(
+        for activation: GridActivation,
+        fallback sourceContext: ActivationSourceContext
+    ) {
         cancelTimeout(for: activation)
         timeoutTasks[activation.generation] = Task { @MainActor [weak self] in
             do {
@@ -237,13 +250,29 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
             } catch {
                 return
             }
-            guard let effect = self?.callbackContext?.expireHandoff(
+            guard let self else {
+                return
+            }
+            if let captureTask = self.sourceCaptureTasks.removeValue(
+                forKey: activation.generation
+            ) {
+                guard let commands = self.callbackContext?
+                    .completeHandoffAtDeadline(for: activation)
+                else {
+                    return
+                }
+                captureTask.cancel()
+                self.fallbackHandoffCommands[activation.generation] = commands
+                self.eventHandler?(.activated(sourceContext))
+                return
+            }
+            guard let effect = self.callbackContext?.expireHandoff(
                 for: activation,
                 timestamp: ProcessInfo.processInfo.systemUptime
             ) else {
                 return
             }
-            self?.deliver(effect)
+            self.deliver(effect)
         }
     }
 
@@ -273,7 +302,8 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         let context = Unmanaged<MacOSGridEventTapContext>
             .fromOpaque(userInfo)
             .takeUnretainedValue()
-        return context.process(type: type, event: event)
+        let timestamp = TimeInterval(event.timestamp) / 1_000_000_000
+        return context.process(type: type, event: event, timestamp: timestamp)
             ? Unmanaged.passUnretained(event)
             : nil
     }
@@ -637,6 +667,17 @@ final class MacOSGridEventTapContext: @unchecked Sendable {
                 return nil
             }
             return machine.completeHandoff(for: activation, timestamp: timestamp)
+        }
+    }
+
+    func completeHandoffAtDeadline(
+        for activation: GridActivation
+    ) -> [GridHandoffCommand]? {
+        lock.withLock {
+            guard isEnabled else {
+                return nil
+            }
+            return machine.completeHandoffAtDeadline(for: activation)
         }
     }
 

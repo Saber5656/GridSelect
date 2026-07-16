@@ -273,13 +273,14 @@ final class GridSelectApplicationController {
 
     @discardableResult
     func cancelSelection() -> Bool {
+        var cancelled = false
         if let manualCaptureTask {
             manualCaptureTask.cancel()
             self.manualCaptureTask = nil
             manualCaptureSessionIdentity = nil
-            return true
+            cancelled = true
         }
-        return coordinator.cancel()
+        return coordinator.cancel() || cancelled
     }
 
 }

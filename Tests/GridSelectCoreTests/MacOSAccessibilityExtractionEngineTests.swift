@@ -1269,12 +1269,27 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
     ) -> AccessibilityElementHandle? {
         hitTestCallCount += 1
         hitTestMessagingTimeouts.append(messagingTimeout)
+        guard let hitTested else {
+            return nil
+        }
+        guard processIdentifier == nil || pid(of: hitTested) == processIdentifier else {
+            return nil
+        }
         return hitTested
     }
-    func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle? {
+    func focusedElement(
+        inProcess processIdentifier: pid_t?,
+        messagingTimeout: Float
+    ) -> AccessibilityElementHandle? {
         if let barrier = focusedElementBarrier {
             barrier.entered.signal()
             _ = barrier.release.wait(timeout: .now() + 2)
+        }
+        guard let focused else {
+            return nil
+        }
+        guard processIdentifier == nil || pid(of: focused) == processIdentifier else {
+            return nil
         }
         return focused
     }
@@ -1316,13 +1331,17 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
         return AccessibilityElementHandle(testIdentifier: windowID)
     }
 
-    func windowCount(inProcess processIdentifier: pid_t) -> Int? {
+    func windowCount(
+        inProcess processIdentifier: pid_t,
+        messagingTimeout: Float
+    ) -> Int? {
         windowsForProcess(processIdentifier).count
     }
 
     func windows(
         inProcess processIdentifier: pid_t,
-        limit: Int
+        limit: Int,
+        messagingTimeout: Float
     ) -> [AccessibilityElementHandle]? {
         let windows = windowsForProcess(processIdentifier)
         return windows.count <= limit ? windows : nil

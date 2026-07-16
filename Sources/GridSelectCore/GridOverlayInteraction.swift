@@ -113,25 +113,25 @@ public struct GridOverlayInteraction: Equatable, Sendable {
             return .rejected
         }
 
-        if let bound = binder.boundContext {
-            let matchesBoundContext = bound.source == candidate.source
-                && bound.element == candidate.element
-                && bound.display.displayID == candidate.viewport.displayID
-                && bound.viewport == candidate.viewport
-            if !matchesBoundContext {
-                guard case let .selected(_, selection) = lifecycle.state,
-                      selection.isEmpty,
-                      case .bound = binder.rebindMouseAnchor(
-                          source: candidate.source,
-                          element: candidate.element,
-                          anchor: anchor,
-                          sourceRange: candidate.sourceRange,
-                          displayID: candidate.viewport.displayID,
-                          viewport: candidate.viewport
-                      )
-                else {
-                    return .rejected
-                }
+        if binder.boundContext != nil {
+            let mayReanchor: Bool
+            switch lifecycle.state {
+            case let .adjusting(_, selection), let .selected(_, selection):
+                mayReanchor = selection.isEmpty
+            default:
+                mayReanchor = false
+            }
+            guard mayReanchor,
+                  case .bound = binder.rebindMouseAnchor(
+                      source: candidate.source,
+                      element: candidate.element,
+                      anchor: anchor,
+                      sourceRange: candidate.sourceRange,
+                      displayID: candidate.viewport.displayID,
+                      viewport: candidate.viewport
+                  )
+            else {
+                return .rejected
             }
         } else {
             guard case .bound = binder.bindMouseAnchor(
