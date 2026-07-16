@@ -113,7 +113,11 @@ public struct GridOverlayInteraction: Equatable, Sendable {
             return .rejected
         }
 
-        if binder.boundContext != nil {
+        if let bound = binder.boundContext {
+            let matchesBoundContext = bound.source == candidate.source
+                && bound.element == candidate.element
+                && bound.display.displayID == candidate.viewport.displayID
+                && bound.viewport == candidate.viewport
             let mayReanchor: Bool
             switch lifecycle.state {
             case let .adjusting(_, selection), let .selected(_, selection):
@@ -122,7 +126,7 @@ public struct GridOverlayInteraction: Equatable, Sendable {
                 mayReanchor = false
             }
             guard mayReanchor else {
-                return .ignored
+                return matchesBoundContext ? .ignored : .rejected
             }
             guard case .bound = binder.rebindMouseAnchor(
                       source: candidate.source,
