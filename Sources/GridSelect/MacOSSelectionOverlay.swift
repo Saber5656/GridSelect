@@ -29,6 +29,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     private let minimumSelectionSize: Double
     private let panelLevel: NSWindow.Level
     private let mouseAnchorResolver: any MacOSGridMouseAnchorResolving
+    private let hasGridMouseAnchorResolver: Bool
 
     private var panels: [SelectionOverlayPanel] = []
     private var localKeyMonitor: Any?
@@ -48,6 +49,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     ) {
         self.minimumSelectionSize = minimumSelectionSize
         self.panelLevel = panelLevel
+        hasGridMouseAnchorResolver = mouseAnchorResolver != nil
         self.mouseAnchorResolver = mouseAnchorResolver
             ?? UnavailableGridMouseAnchorResolver()
     }
@@ -76,7 +78,12 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
                 self.continuation = continuation
                 self.onDrag = onDrag
                 self.sourceContext = sourceContext
-                gridInteraction = sourceContext.map(GridOverlayInteraction.init)
+                gridInteraction = sourceContext.flatMap { context in
+                    guard context.caretCandidate != nil || hasGridMouseAnchorResolver else {
+                        return nil
+                    }
+                    return GridOverlayInteraction(sourceContext: context)
+                }
                 presentPanels(
                     preferredDisplayID: preferredDisplayID(for: sourceContext),
                     sessionGeneration: sessionGeneration
@@ -301,7 +308,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         )
         let view = SelectionOverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
         view.geometry = geometry
-        view.usesGridInteraction = sourceContext != nil
+        view.usesGridInteraction = gridInteraction != nil
         view.onDrag = { [weak self] rectangle in
             guard self?.sessionGuard.isCurrent(sessionGeneration) == true else {
                 return
