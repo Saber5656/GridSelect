@@ -57,6 +57,7 @@ requirements.
 
 - [Product requirements and MVP boundary](docs/product-requirements.md)
 - [ADR 0001: Native macOS architecture for the MVP](docs/adr/0001-macos-native-mvp-architecture.md)
+- [Windows and Linux feasibility research](docs/cross-platform-feasibility.md)
 - [Deferred scope tracker](docs/deferred-scope-tracker.md)
 - [Issue parallel execution plan](docs/issue-parallel-execution-plan.md)
 - [Pre-alpha release checklist](docs/pre-alpha-release-checklist.md)
