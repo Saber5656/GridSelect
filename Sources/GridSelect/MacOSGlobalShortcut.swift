@@ -33,6 +33,12 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
     private var callbackContextPointer: UnsafeMutableRawPointer?
     private var effectRelay: MacOSGridEventEffectRelay?
     private var timeoutTasks: [UInt64: Task<Void, Never>] = [:]
+    private var sourceCaptureTasks: [UInt64: Task<Void, Never>] = [:]
+    private let accessibilityService: MacOSAccessibilitySelectionService?
+
+    init(accessibilityService: MacOSAccessibilitySelectionService? = nil) {
+        self.accessibilityService = accessibilityService
+    }
 
     func registerEventHandler(
         _ handler: @escaping @MainActor @Sendable (SelectionShortcutEvent) -> Void
@@ -103,6 +109,7 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
     ) {
         callbackContext?.cancelHandoff(for: activation, reason: reason)
         cancelTimeout(for: activation)
+        cancelSourceCapture(for: activation)
     }
 
     func unregister() {
@@ -111,6 +118,8 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         effectRelay = nil
         timeoutTasks.values.forEach { $0.cancel() }
         timeoutTasks.removeAll()
+        sourceCaptureTasks.values.forEach { $0.cancel() }
+        sourceCaptureTasks.removeAll()
         callbackContext?.disable()
 
         if let runLoopSource {
@@ -139,15 +148,78 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         case let .activated(activation):
             scheduleTimeout(for: activation)
             guard let sourceContext = MacOSActivationSourceCapturer.capture(
-                activation: activation
+                activation: activation,
+                accessibilityService: nil
             ) else {
                 cancelHandoff(for: activation, reason: .setupFailed)
-                eventHandler(.handoffCancelled(activation, .setupFailed))
+                eventHandler(
+                    .sourceCaptureFailed(activation, .sourceContextInvalid)
+                )
                 return
             }
-            eventHandler(.activated(sourceContext))
+            guard let accessibilityService else {
+                eventHandler(.activated(sourceContext))
+                return
+            }
+            let task = Task { @MainActor [weak self] in
+                var delivered = false
+                defer {
+                    if !delivered, let sessionIdentity = sourceContext.sessionIdentity {
+                        accessibilityService.discardBoundContextsSynchronously(
+                            for: sessionIdentity
+                        )
+                    }
+                }
+                let captureTask = Task.detached(priority: .userInitiated) {
+                    accessibilityService.captureCaretCandidate(
+                        activation: activation,
+                        sessionIdentity: sourceContext.sessionIdentity!,
+                        source: sourceContext.source,
+                        sourceWindowFrame: sourceContext.sourceWindowFrame,
+                        displays: sourceContext.displays
+                    )
+                }
+                let result = await withTaskCancellationHandler {
+                    await captureTask.value
+                } onCancel: {
+                    captureTask.cancel()
+                }
+                guard !Task.isCancelled,
+                      self?.sourceCaptureTasks.removeValue(
+                          forKey: activation.generation
+                      ) != nil,
+                      let self,
+                      let eventHandler = self.eventHandler
+                else {
+                    return
+                }
+                switch result {
+                case let .captured(candidate):
+                    delivered = true
+                    eventHandler(
+                        .activated(
+                            ActivationSourceContext(
+                                activation: activation,
+                                sessionIdentity: sourceContext.sessionIdentity,
+                                source: sourceContext.source,
+                                sourceWindowFrame: sourceContext.sourceWindowFrame,
+                                displays: sourceContext.displays,
+                                caretCandidate: candidate
+                            )
+                        )
+                    )
+                case .unavailable:
+                    delivered = true
+                    eventHandler(.activated(sourceContext))
+                case let .rejected(failure):
+                    self.cancelHandoff(for: activation, reason: .setupFailed)
+                    eventHandler(.sourceCaptureFailed(activation, failure))
+                }
+            }
+            sourceCaptureTasks[activation.generation] = task
         case let .handoffCancelled(activation, reason):
             cancelTimeout(for: activation)
+            cancelSourceCapture(for: activation)
             eventHandler(.handoffCancelled(activation, reason))
         case let .listenerDisabled(activation):
             if let activation {
@@ -177,6 +249,10 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
 
     private func cancelTimeout(for activation: GridActivation) {
         timeoutTasks.removeValue(forKey: activation.generation)?.cancel()
+    }
+
+    private func cancelSourceCapture(for activation: GridActivation) {
+        sourceCaptureTasks.removeValue(forKey: activation.generation)?.cancel()
     }
 
     private static let eventMask: CGEventMask = [
@@ -213,14 +289,65 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
 
 @MainActor
 enum MacOSActivationSourceCapturer {
-    static func capture(activation: GridActivation) -> ActivationSourceContext? {
-        guard let application = NSWorkspace.shared.frontmostApplication else {
+    private static var nextSessionIdentity: UInt64 = 0
+    private static var lastExternalApplication: NSRunningApplication?
+    private static var workspaceActivationObserver: NSObjectProtocol?
+
+    static func startTrackingExternalApplications() {
+        guard workspaceActivationObserver == nil else {
+            return
+        }
+        rememberIfExternal(NSWorkspace.shared.frontmostApplication)
+        workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication
+            Task { @MainActor in
+                rememberIfExternal(application)
+            }
+        }
+    }
+
+    static func preferredSourceProcessIdentifier(
+        frontmost: pid_t?,
+        current: pid_t,
+        lastExternal: pid_t?
+    ) -> pid_t? {
+        if let frontmost, frontmost > 0, frontmost != current {
+            return frontmost
+        }
+        guard let lastExternal, lastExternal > 0, lastExternal != current else {
             return nil
         }
-        let processIdentifier = application.processIdentifier
-        guard processIdentifier > 0,
-              processIdentifier != ProcessInfo.processInfo.processIdentifier,
+        return lastExternal
+    }
+
+    static func capture(
+        activation: GridActivation,
+        accessibilityService: MacOSAccessibilitySelectionService? = nil
+    ) -> ActivationSourceContext? {
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        rememberIfExternal(frontmostApplication)
+        let currentProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+        guard let processIdentifier = preferredSourceProcessIdentifier(
+            frontmost: frontmostApplication?.processIdentifier,
+            current: currentProcessIdentifier,
+            lastExternal: lastExternalApplication?.processIdentifier
+        ),
+              let application = application(
+                  processIdentifier: processIdentifier,
+                  frontmost: frontmostApplication
+              ),
+              !application.isTerminated,
               let window = frontmostWindow(for: processIdentifier)
+        else {
+            return nil
+        }
+        guard !application.isTerminated,
+              application.processIdentifier == processIdentifier
         else {
             return nil
         }
@@ -251,21 +378,72 @@ enum MacOSActivationSourceCapturer {
         guard !displays.isEmpty else {
             return nil
         }
+        let source = SelectionSourceIdentity(
+            processIdentifier: processIdentifier,
+            windowIdentifier: window.identifier
+        )
+        let sourceWindowFrame = ScreenRectangle(
+            x: window.frame.origin.x,
+            y: window.frame.origin.y,
+            width: window.frame.width,
+            height: window.frame.height
+        )
+        let caretCandidate: GridCaretCandidate?
+        nextSessionIdentity &+= 1
+        if nextSessionIdentity == 0 {
+            nextSessionIdentity = 1
+        }
+        let sessionIdentity = SelectionSessionIdentity(rawValue: nextSessionIdentity)
+        if let accessibilityService {
+            switch accessibilityService.captureCaretCandidate(
+                activation: activation,
+                sessionIdentity: sessionIdentity,
+                source: source,
+                sourceWindowFrame: sourceWindowFrame,
+                displays: displays
+            ) {
+            case let .captured(candidate):
+                caretCandidate = candidate
+            case .unavailable:
+                caretCandidate = nil
+            case .rejected:
+                return nil
+            }
+        } else {
+            caretCandidate = nil
+        }
         return ActivationSourceContext(
             activation: activation,
-            source: SelectionSourceIdentity(
-                processIdentifier: processIdentifier,
-                windowIdentifier: window.identifier
-            ),
-            sourceWindowFrame: ScreenRectangle(
-                x: window.frame.origin.x,
-                y: window.frame.origin.y,
-                width: window.frame.width,
-                height: window.frame.height
-            ),
+            sessionIdentity: sessionIdentity,
+            source: source,
+            sourceWindowFrame: sourceWindowFrame,
             displays: displays,
-            caretCandidate: nil
+            caretCandidate: caretCandidate
         )
+    }
+
+    private static func rememberIfExternal(_ application: NSRunningApplication?) {
+        guard let application,
+              application.processIdentifier > 0,
+              application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              !application.isTerminated
+        else {
+            return
+        }
+        lastExternalApplication = application
+    }
+
+    private static func application(
+        processIdentifier: pid_t,
+        frontmost: NSRunningApplication?
+    ) -> NSRunningApplication? {
+        if frontmost?.processIdentifier == processIdentifier {
+            return frontmost
+        }
+        guard lastExternalApplication?.processIdentifier == processIdentifier else {
+            return nil
+        }
+        return lastExternalApplication
     }
 
     private struct WindowSnapshot {

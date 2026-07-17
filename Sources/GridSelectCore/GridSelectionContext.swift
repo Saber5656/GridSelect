@@ -18,6 +18,14 @@ public struct SelectionElementIdentity: Equatable, Hashable, Sendable {
     }
 }
 
+public struct SelectionSessionIdentity: Equatable, Hashable, Sendable {
+    public let rawValue: UInt64
+
+    public init(rawValue: UInt64) {
+        self.rawValue = rawValue
+    }
+}
+
 public struct GridCaretCandidate: Equatable, Sendable {
     public let element: SelectionElementIdentity
     public let anchor: GridBoundary
@@ -61,6 +69,7 @@ public struct GridMouseAnchorCandidate: Equatable, Sendable {
 
 public struct ActivationSourceContext: Equatable, Sendable {
     public let activation: GridActivation
+    public let sessionIdentity: SelectionSessionIdentity?
     public let source: SelectionSourceIdentity
     public let sourceWindowFrame: ScreenRectangle
     public let displays: [DisplayGeometry]
@@ -68,12 +77,14 @@ public struct ActivationSourceContext: Equatable, Sendable {
 
     public init(
         activation: GridActivation,
+        sessionIdentity: SelectionSessionIdentity? = nil,
         source: SelectionSourceIdentity,
         sourceWindowFrame: ScreenRectangle,
         displays: [DisplayGeometry],
         caretCandidate: GridCaretCandidate?
     ) {
         self.activation = activation
+        self.sessionIdentity = sessionIdentity
         self.source = source
         self.sourceWindowFrame = sourceWindowFrame
         self.displays = displays
@@ -81,31 +92,45 @@ public struct ActivationSourceContext: Equatable, Sendable {
     }
 }
 
+public enum SelectionBindingOrigin: Hashable, Sendable {
+    case keyboardCaret
+    case mouseHit
+}
+
 public struct BoundSelectionContext: Equatable, Sendable {
     public let activation: GridActivation
+    public let sessionIdentity: SelectionSessionIdentity?
     public let source: SelectionSourceIdentity
+    public let sourceWindowFrame: ScreenRectangle
     public let element: SelectionElementIdentity
     public let anchor: GridBoundary
     public let sourceRange: Range<Int>
     public let display: DisplayGeometry
     public let viewport: GridSelectionViewport?
+    public let bindingOrigin: SelectionBindingOrigin
 
     public init(
         activation: GridActivation,
+        sessionIdentity: SelectionSessionIdentity? = nil,
         source: SelectionSourceIdentity,
+        sourceWindowFrame: ScreenRectangle,
         element: SelectionElementIdentity,
         anchor: GridBoundary,
         sourceRange: Range<Int>,
         display: DisplayGeometry,
-        viewport: GridSelectionViewport? = nil
+        viewport: GridSelectionViewport? = nil,
+        bindingOrigin: SelectionBindingOrigin = .keyboardCaret
     ) {
         self.activation = activation
+        self.sessionIdentity = sessionIdentity
         self.source = source
+        self.sourceWindowFrame = sourceWindowFrame
         self.element = element
         self.anchor = anchor
         self.sourceRange = sourceRange
         self.display = display
         self.viewport = viewport
+        self.bindingOrigin = bindingOrigin
     }
 }
 
@@ -143,7 +168,8 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
             anchor: candidate.anchor,
             sourceRange: candidate.sourceRange,
             displayID: candidate.displayID,
-            viewport: candidate.viewport
+            viewport: candidate.viewport,
+            bindingOrigin: .keyboardCaret
         )
     }
 
@@ -167,8 +193,43 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
             anchor: anchor,
             sourceRange: sourceRange,
             displayID: displayID,
+            viewport: viewport,
+            bindingOrigin: .mouseHit
+        )
+    }
+
+    public mutating func rebindMouseAnchor(
+        source: SelectionSourceIdentity,
+        element: SelectionElementIdentity,
+        anchor: GridBoundary,
+        sourceRange: Range<Int>,
+        displayID: UInt32,
+        viewport: GridSelectionViewport? = nil
+    ) -> GridSelectionBindingResult {
+        guard boundContext != nil else {
+            return bindMouseAnchor(
+                source: source,
+                element: element,
+                anchor: anchor,
+                sourceRange: sourceRange,
+                displayID: displayID,
+                viewport: viewport
+            )
+        }
+        let previous = boundContext
+        boundContext = nil
+        let result = bindMouseAnchor(
+            source: source,
+            element: element,
+            anchor: anchor,
+            sourceRange: sourceRange,
+            displayID: displayID,
             viewport: viewport
         )
+        if case .rejected = result {
+            boundContext = previous
+        }
+        return result
     }
 
     private mutating func bind(
@@ -177,7 +238,8 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
         anchor: GridBoundary,
         sourceRange: Range<Int>,
         displayID: UInt32,
-        viewport: GridSelectionViewport?
+        viewport: GridSelectionViewport?,
+        bindingOrigin: SelectionBindingOrigin
     ) -> GridSelectionBindingResult {
         guard let display = activationContext.displays.first(where: {
             $0.displayID == displayID
@@ -196,12 +258,15 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
         }
         let context = BoundSelectionContext(
             activation: activationContext.activation,
+            sessionIdentity: activationContext.sessionIdentity,
             source: source,
+            sourceWindowFrame: activationContext.sourceWindowFrame,
             element: element,
             anchor: anchor,
             sourceRange: sourceRange,
             display: display,
-            viewport: viewport
+            viewport: viewport,
+            bindingOrigin: bindingOrigin
         )
         boundContext = context
         return .bound(context)

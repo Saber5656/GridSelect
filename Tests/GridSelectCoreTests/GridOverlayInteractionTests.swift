@@ -92,6 +92,50 @@ final class GridOverlayInteractionTests: XCTestCase {
         XCTAssertEqual(rectangle.width, 0)
     }
 
+    func testFrozenZeroWidthMayRebindToMouseHitTextElement() throws {
+        var interaction = GridOverlayInteraction(sourceContext: context(withCaret: true))
+        XCTAssertNotNil(interaction.freeze())
+        let mouseElement = SelectionElementIdentity(rawValue: 99)
+        let candidate = GridMouseAnchorCandidate(
+            source: interaction.sourceContext.source,
+            element: mouseElement,
+            sourceRange: 8..<8,
+            viewport: viewport()
+        )
+
+        guard case .accepted = interaction.beginMouseSelection(
+            candidate: candidate,
+            at: SelectionPoint(x: 145, y: 450)
+        ) else {
+            return XCTFail("Expected zero-width selection to rebind to the mouse target")
+        }
+
+        XCTAssertEqual(interaction.binder.boundContext?.element, mouseElement)
+        XCTAssertEqual(interaction.binder.boundContext?.sourceRange, 8..<8)
+        XCTAssertEqual(try XCTUnwrap(interaction.currentRectangle).width, 0)
+    }
+
+    func testRejectedZeroWidthMouseRebindPreservesCaretBinding() {
+        var interaction = GridOverlayInteraction(sourceContext: context(withCaret: true))
+        XCTAssertNotNil(interaction.freeze())
+        let original = interaction.binder.boundContext
+        let foreign = GridMouseAnchorCandidate(
+            source: SelectionSourceIdentity(processIdentifier: 99, windowIdentifier: 7),
+            element: SelectionElementIdentity(rawValue: 99),
+            sourceRange: 8..<8,
+            viewport: viewport()
+        )
+
+        XCTAssertEqual(
+            interaction.beginMouseSelection(
+                candidate: foreign,
+                at: SelectionPoint(x: 145, y: 450)
+            ),
+            .rejected
+        )
+        XCTAssertEqual(interaction.binder.boundContext, original)
+    }
+
     func testKeyboardNonzeroCopyCarriesExactBoundContext() {
         let sourceContext = context(withCaret: true)
         var interaction = GridOverlayInteraction(sourceContext: sourceContext)
@@ -167,6 +211,30 @@ final class GridOverlayInteractionTests: XCTestCase {
         )
         XCTAssertEqual(interaction.currentRectangle?.x, 120)
         XCTAssertEqual(interaction.currentRectangle?.width, 10)
+    }
+
+    func testFrozenNonzeroSelectionRejectsDifferentElementWithoutRebinding() {
+        var interaction = GridOverlayInteraction(sourceContext: context(withCaret: true))
+        _ = interaction.moveKeyboardFocus(.right)
+        _ = interaction.freeze()
+        let originalBinding = interaction.binder.boundContext
+        let originalRectangle = interaction.currentRectangle
+        let differentElement = GridMouseAnchorCandidate(
+            source: interaction.sourceContext.source,
+            element: SelectionElementIdentity(rawValue: 99),
+            sourceRange: 8..<8,
+            viewport: viewport()
+        )
+
+        XCTAssertEqual(
+            interaction.beginMouseSelection(
+                candidate: differentElement,
+                at: SelectionPoint(x: 145, y: 450)
+            ),
+            .rejected
+        )
+        XCTAssertEqual(interaction.binder.boundContext, originalBinding)
+        XCTAssertEqual(interaction.currentRectangle, originalRectangle)
     }
 
     func testMouseFocusClampsToBoundDisplayAndPreservesDisplayIdentity() throws {

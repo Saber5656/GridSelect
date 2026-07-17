@@ -103,6 +103,238 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         XCTAssertTrue(clipboard.writtenTexts.isEmpty)
     }
 
+    func testDoubleShiftBoundSelectionUsesBoundExtractorAndDiscardsContext() async {
+        let shortcut = ShortcutStub()
+        let activation = GridActivation(generation: 1)
+        let session = SelectionSessionIdentity(rawValue: 1)
+        let source = SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7)
+        let window = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let display = DisplayGeometry(
+            displayID: 7,
+            appKitFrame: window,
+            coreGraphicsBounds: window,
+            backingScale: 2
+        )
+        let boundContext = BoundSelectionContext(
+            activation: activation,
+            sessionIdentity: session,
+            source: source,
+            sourceWindowFrame: window,
+            element: SelectionElementIdentity(rawValue: 9),
+            anchor: GridBoundary(row: 0, column: 0),
+            sourceRange: 0..<10,
+            display: display
+        )
+        let extractor = BoundExtractorStub(text: "bound text")
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(
+                result: .boundConfirmed(rectangle, boundContext)
+            ),
+            extractor: extractor,
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+
+        XCTAssertTrue(shortcut.trigger())
+        await coordinator.waitForMostRecentSession()
+        await coordinator.waitForAllSessionCleanup()
+
+        let calls = await extractor.calls()
+        XCTAssertEqual(calls.unbound, 0)
+        XCTAssertEqual(calls.bound, [boundContext])
+        XCTAssertEqual(calls.authorized, [boundContext])
+        XCTAssertEqual(calls.discarded, [session])
+        XCTAssertEqual(clipboard.writtenTexts, ["bound text"])
+        XCTAssertEqual(coordinator.state, .completed)
+    }
+
+    func testSourceFailureIsActionableAndDiscardsSession() async {
+        let shortcut = ShortcutStub()
+        let extractor = BoundExtractorStub(text: "unused")
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(
+                result: .sourceFailed(.secureInputUnsupported)
+            ),
+            extractor: extractor,
+            clipboard: ClipboardStub(),
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+
+        XCTAssertTrue(shortcut.trigger())
+        await coordinator.waitForMostRecentSession()
+        await coordinator.waitForAllSessionCleanup()
+
+        XCTAssertEqual(coordinator.state, .failed(.secureInputUnsupported))
+        let failureCalls = await extractor.calls()
+        XCTAssertEqual(
+            failureCalls.discarded,
+            [SelectionSessionIdentity(rawValue: 1)]
+        )
+    }
+
+    func testRejectedConcurrentActivationDiscardsOnlyRejectedSession() async {
+        let shortcut = ShortcutStub()
+        let overlay = SuspendingOverlayStub()
+        let extractor = BoundExtractorStub(text: "unused")
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: extractor,
+            clipboard: ClipboardStub(),
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+        XCTAssertTrue(shortcut.trigger())
+        guard await overlay.waitUntilSelectionCount(1) else {
+            return XCTFail("First selection did not start")
+        }
+
+        XCTAssertTrue(shortcut.trigger())
+        await coordinator.waitForContextCleanup()
+        let rejectedCalls = await extractor.calls()
+        XCTAssertEqual(
+            rejectedCalls.discarded,
+            [SelectionSessionIdentity(rawValue: 2)]
+        )
+
+        XCTAssertTrue(coordinator.cancel())
+        await coordinator.waitForAllSessionCleanup()
+        let finalCalls = await extractor.calls()
+        XCTAssertEqual(
+            Set(finalCalls.discarded),
+            Set([
+                SelectionSessionIdentity(rawValue: 1),
+                SelectionSessionIdentity(rawValue: 2),
+            ])
+        )
+    }
+
+    func testConcurrentSourceCaptureFailureDoesNotCorruptActiveSession() async {
+        let shortcut = ShortcutStub()
+        let overlay = SuspendingOverlayStub()
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: ExtractorStub(behavior: .succeed("unused")),
+            clipboard: ClipboardStub(),
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+        XCTAssertTrue(shortcut.trigger())
+        guard await overlay.waitUntilSelectionCount(1) else {
+            return XCTFail("Selection did not start")
+        }
+
+        shortcut.triggerSourceCaptureFailure(.secureInputUnsupported)
+
+        XCTAssertEqual(coordinator.state, .selecting)
+        XCTAssertTrue(coordinator.cancel())
+        await coordinator.waitForAllSessionCleanup()
+        XCTAssertEqual(coordinator.state, .cancelled)
+    }
+
+    func testBoundConfirmationRejectsDifferentSessionIdentity() async {
+        let shortcut = ShortcutStub()
+        let source = SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7)
+        let window = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let context = BoundSelectionContext(
+            activation: GridActivation(generation: 1),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 999),
+            source: source,
+            sourceWindowFrame: window,
+            element: SelectionElementIdentity(rawValue: 4),
+            anchor: GridBoundary(row: 0, column: 0),
+            sourceRange: 0..<0,
+            display: DisplayGeometry(
+                displayID: 7,
+                appKitFrame: window,
+                coreGraphicsBounds: window,
+                backingScale: 2
+            )
+        )
+        let extractor = BoundExtractorStub(text: "must not extract")
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(result: .boundConfirmed(rectangle, context)),
+            extractor: extractor,
+            clipboard: ClipboardStub(),
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+
+        XCTAssertTrue(shortcut.trigger())
+        await coordinator.waitForMostRecentSession()
+        await coordinator.waitForAllSessionCleanup()
+
+        XCTAssertEqual(coordinator.state, .failed(.extractionFailed))
+        let calls = await extractor.calls()
+        XCTAssertTrue(calls.bound.isEmpty)
+    }
+
+    func testBoundExtractorWithoutCopyAuthorizationFailsClosed() async {
+        let shortcut = ShortcutStub()
+        let frame = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let context = BoundSelectionContext(
+            activation: GridActivation(generation: 1),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 1),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: frame,
+            element: SelectionElementIdentity(rawValue: 5),
+            anchor: GridBoundary(row: 0, column: 0),
+            sourceRange: 0..<0,
+            display: DisplayGeometry(
+                displayID: 7,
+                appKitFrame: frame,
+                coreGraphicsBounds: frame,
+                backingScale: 2
+            )
+        )
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(result: .boundConfirmed(rectangle, context)),
+            extractor: BoundWithoutAuthorizationExtractorStub(),
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+
+        XCTAssertTrue(shortcut.trigger())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .failed(.extractionFailed))
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+    }
+
+    func testCopyAuthorizationCancellationFinishesAsCancelledWithoutWriting() async {
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: ShortcutStub(),
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(result: .confirmed(rectangle)),
+            extractor: CopyAuthorizationCancellationExtractorStub(),
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+
+        XCTAssertTrue(coordinator.activate())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .cancelled)
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+    }
+
     func testConfirmedSelectionNormalizesTextBeforeClipboardWrite() async {
         let clipboard = ClipboardStub()
         let coordinator = makeCoordinator(
@@ -119,6 +351,49 @@ final class SelectionModeCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(clipboard.writtenTexts, ["alpha  \nbravo  "])
         XCTAssertEqual(coordinator.state, .completed)
+    }
+
+    func testPermissionRevokedAfterExtractionPreventsClipboardWrite() async {
+        let permission = PermissionStub(status: .granted)
+        let extractor = ControlledExtractorStub()
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: ShortcutStub(),
+            permission: permission,
+            overlay: ImmediateOverlayStub(result: .confirmed(rectangle)),
+            extractor: extractor,
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.activate())
+        guard await extractor.waitUntilStarted() else {
+            return XCTFail("Extraction did not start")
+        }
+
+        permission.selectionPermissionStatus = .required
+        await extractor.succeed(with: "must not copy")
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .permissionRequired)
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+    }
+
+    func testSecureInputEnabledAtCopyAuthorizationPreventsClipboardWrite() async {
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: ShortcutStub(),
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(result: .confirmed(rectangle)),
+            extractor: CopyAuthorizationExtractorStub(),
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+
+        XCTAssertTrue(coordinator.activate())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .failed(.secureInputUnsupported))
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
     }
 
     func testMissingPermissionDoesNotPresentOverlay() async {
@@ -731,6 +1006,7 @@ final class SelectionModeCoordinatorTests: XCTestCase {
             overlay.handoffCommands,
             [.move(.right), .freeze, .move(.right)]
         )
+        XCTAssertEqual(shortcut.cancelledActivations, [])
         XCTAssertEqual(coordinator.state, .cancelled)
     }
 
@@ -890,9 +1166,20 @@ private final class ShortcutStub: SelectionShortcutRegistering {
         handler?(.listenerDisabled)
     }
 
+    func triggerSourceCaptureFailure(_ failure: SelectionSourceFailure) {
+        nextGeneration += 1
+        handler?(
+            .sourceCaptureFailed(
+                GridActivation(generation: nextGeneration),
+                failure
+            )
+        )
+    }
+
     private func testSourceContext(generation: UInt64) -> ActivationSourceContext {
         ActivationSourceContext(
             activation: GridActivation(generation: generation),
+            sessionIdentity: SelectionSessionIdentity(rawValue: generation),
             source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
             sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
             displays: [
@@ -1163,6 +1450,87 @@ private actor ControlledExtractorStub: RectangularTextExtracting {
         )
         startedExpectations.removeAll { $0 === expectation }
         return result == .completed
+    }
+}
+
+private actor BoundExtractorStub: RectangularTextExtracting {
+    private let text: String
+    private var unboundCallCount = 0
+    private var boundContexts: [BoundSelectionContext] = []
+    private var authorizedContexts: [BoundSelectionContext?] = []
+    private var discardedSessions: [SelectionSessionIdentity] = []
+
+    init(text: String) {
+        self.text = text
+    }
+
+    func extractText(in rectangle: SelectionRectangle) async throws -> String {
+        unboundCallCount += 1
+        return text
+    }
+
+    func extractText(
+        in rectangle: SelectionRectangle,
+        boundContext: BoundSelectionContext
+    ) async throws -> String {
+        boundContexts.append(boundContext)
+        return text
+    }
+
+    func discardBoundContexts(for sessionIdentity: SelectionSessionIdentity) async {
+        discardedSessions.append(sessionIdentity)
+    }
+
+    func validateCopyAuthorization(
+        for boundContext: BoundSelectionContext?
+    ) async throws {
+        authorizedContexts.append(boundContext)
+    }
+
+    func calls() -> (
+        unbound: Int,
+        bound: [BoundSelectionContext],
+        authorized: [BoundSelectionContext?],
+        discarded: [SelectionSessionIdentity]
+    ) {
+        (unboundCallCount, boundContexts, authorizedContexts, discardedSessions)
+    }
+}
+
+private actor CopyAuthorizationCancellationExtractorStub: RectangularTextExtracting {
+    func extractText(in rectangle: SelectionRectangle) async throws -> String {
+        "text"
+    }
+
+    func validateCopyAuthorization(
+        for boundContext: BoundSelectionContext?
+    ) async throws {
+        throw CancellationError()
+    }
+}
+
+private actor CopyAuthorizationExtractorStub: RectangularTextExtracting {
+    func extractText(in rectangle: SelectionRectangle) async throws -> String {
+        "must not copy"
+    }
+
+    func validateCopyAuthorization(
+        for boundContext: BoundSelectionContext?
+    ) async throws {
+        throw SelectionSourceFailureError(.secureInputUnsupported)
+    }
+}
+
+private actor BoundWithoutAuthorizationExtractorStub: RectangularTextExtracting {
+    func extractText(in rectangle: SelectionRectangle) async throws -> String {
+        "text"
+    }
+
+    func extractText(
+        in rectangle: SelectionRectangle,
+        boundContext: BoundSelectionContext
+    ) async throws -> String {
+        "text"
     }
 }
 

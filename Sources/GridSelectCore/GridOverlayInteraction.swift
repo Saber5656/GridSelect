@@ -119,18 +119,31 @@ public struct GridOverlayInteraction: Equatable, Sendable {
         else {
             return .rejected
         }
+
         let boundedAnchor = GridBoundary(
             row: anchor.row,
             column: min(anchor.column, maximumColumn)
         )
 
         if let bound = binder.boundContext {
-            guard bound.source == candidate.source,
-                  bound.element == candidate.element,
-                  bound.display.displayID == candidate.viewport.displayID,
-                  bound.viewport == candidate.viewport
-            else {
-                return .rejected
+            let matchesBoundContext = bound.source == candidate.source
+                && bound.element == candidate.element
+                && bound.display.displayID == candidate.viewport.displayID
+                && bound.viewport == candidate.viewport
+            if !matchesBoundContext {
+                guard case let .selected(_, selection) = lifecycle.state,
+                      selection.isEmpty,
+                      case .bound = binder.rebindMouseAnchor(
+                          source: candidate.source,
+                          element: candidate.element,
+                          anchor: boundedAnchor,
+                          sourceRange: candidate.sourceRange,
+                          displayID: candidate.viewport.displayID,
+                          viewport: candidate.viewport
+                      )
+                else {
+                    return .rejected
+                }
             }
         } else {
             guard case .bound = binder.bindMouseAnchor(

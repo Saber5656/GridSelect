@@ -4,28 +4,32 @@ import XCTest
 
 @MainActor
 final class GridSelectApplicationControllerTests: XCTestCase {
-    func testManualActivationUsesUnboundOverlayPath() async {
-        let clipboard = ApplicationClipboardStub()
-        let rectangle = SelectionRectangle(
-            displayID: 1,
-            x: 10,
-            y: 20,
-            width: 30,
-            height: 40
+    func testManualSourcePrefersLastExternalApplicationWhenGridSelectIsFrontmost() {
+        XCTAssertEqual(
+            MacOSActivationSourceCapturer.preferredSourceProcessIdentifier(
+                frontmost: 100,
+                current: 100,
+                lastExternal: 42
+            ),
+            42
         )
-        let controller = GridSelectApplicationController(
-            shortcut: ApplicationShortcutStub(),
-            permissionChecker: ApplicationPermissionStub(status: .granted),
-            overlay: ApplicationOverlayStub(result: .confirmed(rectangle)),
-            extractor: ApplicationExtractorStub(text: "manual"),
-            clipboard: clipboard
+    }
+
+    func testManualSourceDoesNotReuseSelfOrInvalidCachedProcess() {
+        XCTAssertNil(
+            MacOSActivationSourceCapturer.preferredSourceProcessIdentifier(
+                frontmost: 100,
+                current: 100,
+                lastExternal: 100
+            )
         )
-
-        XCTAssertTrue(controller.activateSelection())
-        await waitForTerminalState(controller)
-
-        XCTAssertEqual(controller.statusModel.snapshot.selectionState, .completed)
-        XCTAssertEqual(clipboard.values, ["manual"])
+        XCTAssertNil(
+            MacOSActivationSourceCapturer.preferredSourceProcessIdentifier(
+                frontmost: 100,
+                current: 100,
+                lastExternal: 0
+            )
+        )
     }
 
     func testShortcutRejectsUnboundConfirmationBeforeExtractionOrCopy() async {
@@ -111,10 +115,29 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         let extractor = ApplicationExtractorStub(shouldFail: true)
         let clipboard = ApplicationClipboardStub()
         let rectangle = SelectionRectangle(displayID: 1, x: 10, y: 20, width: 30, height: 40)
+        let frame = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let display = DisplayGeometry(
+            displayID: 1,
+            appKitFrame: frame,
+            coreGraphicsBounds: frame,
+            backingScale: 2
+        )
+        let boundContext = BoundSelectionContext(
+            activation: GridActivation(generation: 1),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 1),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: frame,
+            element: SelectionElementIdentity(rawValue: 1),
+            anchor: GridBoundary(row: 0, column: 0),
+            sourceRange: 0..<0,
+            display: display
+        )
         let controller = GridSelectApplicationController(
             shortcut: shortcut,
             permissionChecker: ApplicationPermissionStub(status: .granted),
-            overlay: ApplicationOverlayStub(result: .confirmed(rectangle)),
+            overlay: ApplicationOverlayStub(
+                result: .boundConfirmed(rectangle, boundContext)
+            ),
             extractor: extractor,
             clipboard: clipboard
         )
@@ -129,7 +152,7 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         )
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Text could not be read")
         let extractionCallCount = await extractor.callCount()
-        XCTAssertEqual(extractionCallCount, 0)
+        XCTAssertEqual(extractionCallCount, 1)
         XCTAssertTrue(clipboard.values.isEmpty)
     }
 
@@ -200,6 +223,47 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Shortcut unavailable")
     }
 
+    func testManualCaptureFailureSurfacesActionableStatus() {
+        let controller = GridSelectApplicationController(
+            shortcut: ApplicationShortcutStub(),
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .cancelled),
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+        let frame = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let context = ActivationSourceContext(
+            activation: GridActivation(generation: 1),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 1),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: frame,
+            displays: [
+                DisplayGeometry(
+                    displayID: 1,
+                    appKitFrame: frame,
+                    coreGraphicsBounds: frame,
+                    backingScale: 2
+                ),
+            ],
+            caretCandidate: nil
+        )
+
+        XCTAssertFalse(
+            controller.handleManualCaptureResult(
+                .rejected(.secureInputUnsupported),
+                sourceContext: context
+            )
+        )
+        XCTAssertEqual(
+            controller.statusModel.snapshot.selectionState,
+            .failed(.secureInputUnsupported)
+        )
+        XCTAssertEqual(
+            controller.statusModel.snapshot.statusTitle,
+            "Secure input is unsupported"
+        )
+    }
+
     func testInputMonitoringRegistrationFailureIsSurfacedWithRecoveryGuidance() {
         let shortcut = ApplicationShortcutStub()
         shortcut.registrationError = MacOSGlobalShortcutError.inputMonitoringRequired
@@ -225,6 +289,46 @@ final class GridSelectApplicationControllerTests: XCTestCase {
             controller.statusModel.snapshot.shortcutStatus,
             .active(displayName: "Double-Shift")
         )
+    }
+
+    func testCancelStopsPendingManualCaptureBeforeOverlayStarts() async {
+        let overlay = ApplicationOverlayStub(result: .cancelled)
+        let controller = GridSelectApplicationController(
+            shortcut: ApplicationShortcutStub(),
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+        let frame = ScreenRectangle(x: 0, y: 0, width: 100, height: 100)
+        let context = ActivationSourceContext(
+            activation: GridActivation(generation: 2),
+            sessionIdentity: SelectionSessionIdentity(rawValue: 2),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: frame,
+            displays: [
+                DisplayGeometry(
+                    displayID: 1,
+                    appKitFrame: frame,
+                    coreGraphicsBounds: frame,
+                    backingScale: 2
+                ),
+            ],
+            caretCandidate: nil
+        )
+        XCTAssertTrue(
+            controller.beginManualCapture(sourceContext: context) {
+                try? await Task.sleep(for: .seconds(10))
+                return .unavailable
+            }
+        )
+
+        XCTAssertTrue(controller.cancelSelection())
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(overlay.selectionCount, 0)
     }
 
     func testListenerDisableMarksShortcutInactive() {
@@ -294,6 +398,7 @@ private final class ApplicationShortcutStub: SelectionShortcutRegistering {
     private func testSourceContext(generation: UInt64) -> ActivationSourceContext {
         ActivationSourceContext(
             activation: GridActivation(generation: generation),
+            sessionIdentity: SelectionSessionIdentity(rawValue: generation),
             source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
             sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
             displays: [
@@ -366,6 +471,15 @@ private actor ApplicationExtractorStub: RectangularTextExtracting {
         if shouldFail { throw ApplicationTestError.expected }
         return text
     }
+
+    func extractText(
+        in rectangle: SelectionRectangle,
+        boundContext: BoundSelectionContext
+    ) async throws -> String {
+        try await extractText(in: rectangle)
+    }
+
+    func validateCopyAuthorization(for boundContext: BoundSelectionContext?) async throws {}
 
     func callCount() -> Int { calls }
 }
