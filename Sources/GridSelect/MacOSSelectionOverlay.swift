@@ -14,8 +14,11 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     private var panels: [SelectionOverlayPanel] = []
     private var localKeyMonitor: Any?
     private var displayChangeObserver: NSObjectProtocol?
+    private var ownershipLossObserver: NSObjectProtocol?
     private var continuation: CheckedContinuation<SelectionOverlayResult, any Error>?
     private var onDrag: (@MainActor @Sendable (SelectionRectangle) -> Void)?
+    private var frozenRectangle: SelectionRectangle?
+    private var deferredHandoffCommands: [GridHandoffCommand] = []
 
     init(
         minimumSelectionSize: Double = 4,
@@ -26,6 +29,14 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     }
 
     func select(
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        try await select(sourceContext: nil, onReady: { [] }, onDrag: onDrag)
+    }
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult {
         guard continuation == nil else {
@@ -39,7 +50,13 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
                 self.onDrag = onDrag
-                presentPanels()
+                presentPanels(preferredDisplayID: preferredDisplayID(for: sourceContext))
+                guard verifyInputOwnership(), let commands = onReady() else {
+                    finish(with: .cancelled)
+                    return
+                }
+                monitorOwnershipLoss()
+                applyHandoffCommands(commands)
             }
         } onCancel: {
             Task { @MainActor [weak self] in
@@ -48,20 +65,78 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         }
     }
 
+    func select(
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        try await select(sourceContext: nil, onReady: onReady, onDrag: onDrag)
+    }
+
+    private func verifyInputOwnership() -> Bool {
+        let owningPanels = panels.filter(\.isKeyWindow)
+        guard owningPanels.count == 1,
+              let panel = owningPanels.first,
+              let contentView = panel.contentView
+        else {
+            return false
+        }
+        return panel.firstResponder === contentView
+    }
+
+    private func applyHandoffCommands(_ commands: [GridHandoffCommand]) {
+        for command in commands {
+            switch command {
+            case .cancelRequested:
+                finish(with: .cancelled)
+                return
+            case .copyRequested:
+                confirmFrozenSelectionIfPossible()
+            case .freeze, .move:
+                // Issue #13 drains these into its caret/grid interaction model.
+                // Retain semantic commands until that adapter consumes them;
+                // never replay them to the source application.
+                deferredHandoffCommands.append(command)
+            }
+        }
+    }
+
     func dismissSelection() {
         finish(with: .cancelled)
     }
 
-    private func presentPanels() {
+    private func presentPanels(preferredDisplayID: UInt32?) {
         panels = NSScreen.screens.map(makePanel)
+
+        let preferredScreen = preferredDisplayID.flatMap { preferredDisplayID in
+            NSScreen.screens.first(where: { displayID(for: $0) == preferredDisplayID })
+        } ?? NSScreen.main ?? NSScreen.screens.first
+        guard let owningPanel = panels.first(where: { $0.screen === preferredScreen }),
+              let contentView = owningPanel.contentView
+        else {
+            finish(with: .cancelled)
+            return
+        }
+        owningPanel.makeKey()
+        owningPanel.makeFirstResponder(contentView)
 
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
             [weak self] event in
-            guard event.keyCode == 53 else {
+            guard let self else {
                 return event
             }
-            self?.finish(with: .cancelled)
-            return nil
+            guard self.verifyInputOwnership() else {
+                self.finish(with: .cancelled)
+                return nil
+            }
+            if event.keyCode == 53 {
+                self.finish(with: .cancelled)
+                return nil
+            }
+            if event.keyCode == 8, event.modifierFlags.contains(.command) {
+                self.confirmFrozenSelectionIfPossible()
+                return nil
+            }
+            return event
         }
 
         displayChangeObserver = NotificationCenter.default.addObserver(
@@ -73,6 +148,51 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
                 self?.finish(with: .cancelled)
             }
         }
+    }
+
+    private func preferredDisplayID(
+        for context: ActivationSourceContext?
+    ) -> UInt32? {
+        guard let context else {
+            return nil
+        }
+        if let caretDisplayID = context.caretCandidate?.displayID {
+            return caretDisplayID
+        }
+        let centerX = context.sourceWindowFrame.minX + context.sourceWindowFrame.width / 2
+        let centerY = context.sourceWindowFrame.minY + context.sourceWindowFrame.height / 2
+        return context.displays.first(where: { display in
+            let bounds = display.coreGraphicsBounds
+            return centerX >= bounds.minX && centerX < bounds.maxX
+                && centerY >= bounds.minY && centerY < bounds.maxY
+        })?.displayID
+    }
+
+    private func monitorOwnershipLoss() {
+        guard let owningPanel = panels.first(where: \.isKeyWindow) else {
+            finish(with: .cancelled)
+            return
+        }
+        ownershipLossObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: owningPanel,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.finish(with: .cancelled)
+            }
+        }
+    }
+
+    private func freeze(_ rectangle: SelectionRectangle) {
+        frozenRectangle = rectangle
+    }
+
+    private func confirmFrozenSelectionIfPossible() {
+        guard let frozenRectangle, !frozenRectangle.isEmpty else {
+            return
+        }
+        finish(with: .confirmed(frozenRectangle))
     }
 
     private func makePanel(for screen: NSScreen) -> SelectionOverlayPanel {
@@ -94,8 +214,11 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         view.onCancel = { [weak self] in
             self?.finish(with: .cancelled)
         }
-        view.onConfirm = { [weak self] rectangle in
-            self?.finish(with: .confirmed(rectangle))
+        view.onFreeze = { [weak self] rectangle in
+            self?.freeze(rectangle)
+        }
+        view.onCopy = { [weak self] in
+            self?.confirmFrozenSelectionIfPossible()
         }
 
         let panel = SelectionOverlayPanel(
@@ -114,8 +237,6 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         panel.ignoresMouseEvents = false
         panel.contentView = view
         panel.orderFrontRegardless()
-        panel.makeKey()
-        panel.makeFirstResponder(view)
         return panel
     }
 
@@ -139,6 +260,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             NotificationCenter.default.removeObserver(displayChangeObserver)
             self.displayChangeObserver = nil
         }
+        if let ownershipLossObserver {
+            NotificationCenter.default.removeObserver(ownershipLossObserver)
+            self.ownershipLossObserver = nil
+        }
 
         panels.forEach { panel in
             panel.orderOut(nil)
@@ -146,6 +271,8 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         }
         panels.removeAll()
         onDrag = nil
+        frozenRectangle = nil
+        deferredHandoffCommands.removeAll(keepingCapacity: false)
     }
 
     private func displayID(for screen: NSScreen) -> UInt32 {
@@ -164,7 +291,8 @@ private final class SelectionOverlayView: NSView {
     var geometry: SelectionDragGeometry?
     var onDrag: ((SelectionRectangle) -> Void)?
     var onCancel: (() -> Void)?
-    var onConfirm: ((SelectionRectangle) -> Void)?
+    var onFreeze: ((SelectionRectangle) -> Void)?
+    var onCopy: (() -> Void)?
 
     private var anchor: SelectionPoint?
     private var current: SelectionPoint?
@@ -202,12 +330,10 @@ private final class SelectionOverlayView: NSView {
         current = selectionPoint(for: event)
         needsDisplay = true
 
-        guard let geometry, let rectangle = currentRectangle(),
-              geometry.isConfirmable(rectangle) else {
-            onCancel?()
+        guard let rectangle = currentRectangle() else {
             return
         }
-        onConfirm?(rectangle)
+        onFreeze?(rectangle)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -215,11 +341,13 @@ private final class SelectionOverlayView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        guard event.keyCode == 53 else {
+        if event.keyCode == 53 {
+            onCancel?()
+        } else if event.keyCode == 8, event.modifierFlags.contains(.command) {
+            onCopy?()
+        } else {
             super.keyDown(with: event)
-            return
         }
-        onCancel?()
     }
 
     override func draw(_ dirtyRect: NSRect) {

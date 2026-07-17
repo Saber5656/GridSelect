@@ -60,6 +60,11 @@ final class GridSelectApplicationController {
                     statusModel?.recheckPermission()
                     permissionSetupPresenter.presentPermissionSetup()
                 }
+                if state == .failed(.listenerDisabled) {
+                    statusModel?.updateShortcutStatus(
+                        .inactive(displayName: MacOSGlobalShortcut.displayName)
+                    )
+                }
                 statusModel?.updateSelectionState(state)
             }
         )
@@ -72,9 +77,18 @@ final class GridSelectApplicationController {
         statusModel.updateShortcutStatus(
             installed
                 ? .active(displayName: MacOSGlobalShortcut.displayName)
-                : .registrationFailed(displayName: MacOSGlobalShortcut.displayName)
+                : shortcutFailureStatus()
         )
         return installed
+    }
+
+    private func shortcutFailureStatus() -> ShortcutReadiness {
+        if coordinator.shortcutRegistrationError as? MacOSGlobalShortcutError
+            == .inputMonitoringRequired
+        {
+            return .inputMonitoringRequired(displayName: MacOSGlobalShortcut.displayName)
+        }
+        return .registrationFailed(displayName: MacOSGlobalShortcut.displayName)
     }
 
     func stop() {

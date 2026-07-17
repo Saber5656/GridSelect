@@ -5,11 +5,13 @@ public enum SelectionPermissionStatus: Equatable, Sendable {
 
 public enum SelectionOverlayResult: Equatable, Sendable {
     case confirmed(SelectionRectangle)
+    case boundConfirmed(SelectionRectangle, BoundSelectionContext)
     case cancelled
 }
 
 public enum SelectionModeFailure: Equatable, Sendable {
     case shortcutRegistrationFailed
+    case listenerDisabled
     case overlayFailed
     case extractionFailed
     case clipboardWriteFailed
@@ -43,11 +45,35 @@ public enum SelectionModeState: Equatable, Sendable {
 
 @MainActor
 public protocol SelectionShortcutRegistering: AnyObject {
-    func registerActivationHandler(
-        _ handler: @escaping @MainActor @Sendable () -> Void
+    func registerEventHandler(
+        _ handler: @escaping @MainActor @Sendable (SelectionShortcutEvent) -> Void
     ) throws
 
+    func completeHandoff(for activation: GridActivation) -> [GridHandoffCommand]?
+
+    func cancelHandoff(
+        for activation: GridActivation,
+        reason: GridActivationCancellationReason
+    )
+
     func unregister()
+}
+
+public enum SelectionShortcutEvent: Equatable, Sendable {
+    case activated(ActivationSourceContext)
+    case handoffCancelled(GridActivation, GridActivationCancellationReason)
+    case listenerDisabled
+}
+
+public extension SelectionShortcutRegistering {
+    func completeHandoff(for activation: GridActivation) -> [GridHandoffCommand]? {
+        []
+    }
+
+    func cancelHandoff(
+        for activation: GridActivation,
+        reason: GridActivationCancellationReason
+    ) {}
 }
 
 @MainActor
@@ -58,10 +84,36 @@ public protocol SelectionPermissionChecking: AnyObject {
 @MainActor
 public protocol SelectionOverlayPresenting: AnyObject {
     func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult
+
+    func select(
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult
 
     func dismissSelection()
+}
+
+public extension SelectionOverlayPresenting {
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        guard onReady() != nil else {
+            return .cancelled
+        }
+        return try await select(onDrag: onDrag)
+    }
+
+    func select(
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        try await select(sourceContext: nil, onReady: onReady, onDrag: onDrag)
+    }
 }
 
 public protocol RectangularTextExtracting: Sendable {
@@ -76,6 +128,7 @@ public protocol ClipboardWriting: AnyObject {
 @MainActor
 public final class SelectionModeCoordinator {
     public private(set) var state: SelectionModeState = .idle
+    public private(set) var shortcutRegistrationError: (any Error)?
 
     private let shortcut: any SelectionShortcutRegistering
     private let permissionChecker: any SelectionPermissionChecking
@@ -89,6 +142,8 @@ public final class SelectionModeCoordinator {
     private var shortcutGeneration = 0
     private var nextSessionID = 0
     private var activeSessionID: Int?
+    private var activeSourceContext: ActivationSourceContext?
+    private var activeHandoffRequired = false
     private var sessionTasks: [Int: Task<Void, Never>] = [:]
 
     public init(
@@ -118,15 +173,22 @@ public final class SelectionModeCoordinator {
         shortcutGeneration += 1
         let registrationGeneration = shortcutGeneration
         do {
-            try shortcut.registerActivationHandler { [weak self] in
-                self?.handleShortcutActivation(generation: registrationGeneration)
+            try shortcut.registerEventHandler { [weak self] event in
+                self?.handleShortcutEvent(
+                    event,
+                    registrationGeneration: registrationGeneration
+                )
             }
             isShortcutInstalled = true
-            if state == .failed(.shortcutRegistrationFailed) {
+            shortcutRegistrationError = nil
+            if state == .failed(.shortcutRegistrationFailed)
+                || state == .failed(.listenerDisabled)
+            {
                 transition(to: .idle)
             }
             return true
         } catch {
+            shortcutRegistrationError = error
             transition(to: .failed(.shortcutRegistrationFailed))
             return false
         }
@@ -134,6 +196,17 @@ public final class SelectionModeCoordinator {
 
     @discardableResult
     public func activate() -> Bool {
+        activate(with: nil, requiresHandoff: false)
+    }
+
+    public func activate(sourceContext: ActivationSourceContext) -> Bool {
+        activate(with: sourceContext, requiresHandoff: false)
+    }
+
+    private func activate(
+        with sourceContext: ActivationSourceContext?,
+        requiresHandoff: Bool
+    ) -> Bool {
         guard !state.isActive, activeSessionID == nil else {
             return false
         }
@@ -146,6 +219,8 @@ public final class SelectionModeCoordinator {
         nextSessionID += 1
         let sessionID = nextSessionID
         activeSessionID = sessionID
+        activeSourceContext = sourceContext
+        activeHandoffRequired = requiresHandoff
         transition(to: .selecting)
 
         guard isCurrent(sessionID) else {
@@ -168,6 +243,11 @@ public final class SelectionModeCoordinator {
         }
 
         activeSessionID = nil
+        if let activeSourceContext {
+            shortcut.cancelHandoff(for: activeSourceContext.activation, reason: .setupFailed)
+            self.activeSourceContext = nil
+        }
+        activeHandoffRequired = false
         sessionTasks[sessionID]?.cancel()
         overlay.dismissSelection()
         transition(to: .cancelled)
@@ -176,6 +256,11 @@ public final class SelectionModeCoordinator {
 
     public func shutdown() {
         activeSessionID = nil
+        if let activeSourceContext {
+            shortcut.cancelHandoff(for: activeSourceContext.activation, reason: .setupFailed)
+            self.activeSourceContext = nil
+        }
+        activeHandoffRequired = false
         sessionTasks.values.forEach { $0.cancel() }
         overlay.dismissSelection()
 
@@ -216,9 +301,15 @@ public final class SelectionModeCoordinator {
 
         let overlayResult: SelectionOverlayResult
         do {
-            overlayResult = try await overlay.select { [weak self] rectangle in
-                self?.handleDrag(rectangle, sessionID: sessionID)
-            }
+            overlayResult = try await overlay.select(
+                sourceContext: activeSourceContext,
+                onReady: { [weak self] in
+                    self?.completeHandoff(for: sessionID)
+                },
+                onDrag: { [weak self] rectangle in
+                    self?.handleDrag(rectangle, sessionID: sessionID)
+                }
+            )
         } catch is CancellationError {
             dismissOverlay(for: sessionID)
             finish(with: .cancelled, sessionID: sessionID)
@@ -238,7 +329,25 @@ public final class SelectionModeCoordinator {
         case .cancelled:
             finish(with: .cancelled, sessionID: sessionID)
         case let .confirmed(rectangle):
+            guard activeSourceContext == nil else {
+                // The production Double-Shift path must never fall back to
+                // copy-time hit testing. Issue #14 supplies bound extraction.
+                finish(with: .failed(.extractionFailed), sessionID: sessionID)
+                return
+            }
             await processConfirmedSelection(rectangle, sessionID: sessionID)
+        case let .boundConfirmed(rectangle, boundContext):
+            guard let activeSourceContext,
+                  boundContext.activation == activeSourceContext.activation,
+                  boundContext.source == activeSourceContext.source
+            else {
+                finish(with: .failed(.extractionFailed), sessionID: sessionID)
+                return
+            }
+            // Fail closed until Issue #14 changes the extractor port to accept
+            // and revalidate this exact bound element at copy time.
+            _ = rectangle
+            finish(with: .failed(.extractionFailed), sessionID: sessionID)
         }
     }
 
@@ -303,11 +412,57 @@ public final class SelectionModeCoordinator {
         activeSessionID == sessionID
     }
 
-    private func handleShortcutActivation(generation: Int) {
-        guard isShortcutInstalled, shortcutGeneration == generation else {
+    private func handleShortcutEvent(
+        _ event: SelectionShortcutEvent,
+        registrationGeneration: Int
+    ) {
+        guard isShortcutInstalled,
+              shortcutGeneration == registrationGeneration
+        else {
             return
         }
-        activate()
+        switch event {
+        case let .activated(sourceContext):
+            guard activate(with: sourceContext, requiresHandoff: true) else {
+                shortcut.cancelHandoff(
+                    for: sourceContext.activation,
+                    reason: .setupFailed
+                )
+                return
+            }
+        case let .handoffCancelled(activation, _):
+            guard activeSourceContext?.activation == activation else {
+                return
+            }
+            cancel()
+        case .listenerDisabled:
+            isShortcutInstalled = false
+            shortcutGeneration += 1
+            shortcut.unregister()
+            if activeSessionID != nil {
+                _ = cancel()
+            }
+            transition(to: .failed(.listenerDisabled))
+        }
+    }
+
+    private func completeHandoff(for sessionID: Int) -> [GridHandoffCommand]? {
+        guard isCurrent(sessionID) else {
+            return nil
+        }
+        guard activeHandoffRequired else {
+            return []
+        }
+        guard let activeSourceContext else {
+            return []
+        }
+        guard let commands = shortcut.completeHandoff(
+            for: activeSourceContext.activation
+        ) else {
+            return nil
+        }
+        activeHandoffRequired = false
+        return commands
     }
 
     private func transition(to newState: SelectionModeState, for sessionID: Int) {
@@ -353,6 +508,11 @@ public final class SelectionModeCoordinator {
         }
 
         activeSessionID = nil
+        if let activeSourceContext {
+            shortcut.cancelHandoff(for: activeSourceContext.activation, reason: .setupFailed)
+            self.activeSourceContext = nil
+        }
+        activeHandoffRequired = false
         transition(to: finalState)
     }
 }

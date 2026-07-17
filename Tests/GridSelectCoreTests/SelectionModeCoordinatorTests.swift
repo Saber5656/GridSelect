@@ -80,6 +80,29 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         XCTAssertEqual(overlay.dismissalCount, 1)
     }
 
+    func testDoubleShiftPathCannotUseUnboundCopyTimeHitTesting() async {
+        let shortcut = ShortcutStub()
+        let extractor = ExtractorStub(behavior: .succeed("must not be read"))
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(result: .confirmed(rectangle)),
+            extractor: extractor,
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+
+        XCTAssertTrue(shortcut.trigger())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .failed(.extractionFailed))
+        let extractionCallCount = await extractor.callCount()
+        XCTAssertEqual(extractionCallCount, 0)
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+    }
+
     func testConfirmedSelectionNormalizesTextBeforeClipboardWrite() async {
         let clipboard = ClipboardStub()
         let coordinator = makeCoordinator(
@@ -685,6 +708,96 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         XCTAssertEqual(overlay.selectionCount, 1)
     }
 
+    func testShortcutHandoffDrainsAtOverlayReadiness() async {
+        let shortcut = ShortcutStub()
+        shortcut.handoffCommands = [.move(.right), .freeze, .move(.right)]
+        let overlay = HandoffCapturingOverlayStub()
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: ExtractorStub(behavior: .succeed("unused")),
+            clipboard: ClipboardStub(),
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+
+        XCTAssertTrue(shortcut.trigger())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(shortcut.completedActivations, [GridActivation(generation: 1)])
+        XCTAssertEqual(overlay.sourceContext?.activation, GridActivation(generation: 1))
+        XCTAssertEqual(
+            overlay.handoffCommands,
+            [.move(.right), .freeze, .move(.right)]
+        )
+        XCTAssertEqual(coordinator.state, .cancelled)
+    }
+
+    func testListenerDisablementFailsClosedAfterHandoff() async {
+        let shortcut = ShortcutStub()
+        let overlay = SuspendingOverlayStub()
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: ExtractorStub(behavior: .succeed("unused")),
+            clipboard: ClipboardStub(),
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+        XCTAssertTrue(shortcut.trigger())
+        guard await overlay.waitUntilSelectionCount(1) else {
+            XCTFail("Timed out waiting for the selection overlay to start")
+            return
+        }
+
+        shortcut.triggerListenerDisabled()
+        await coordinator.waitForAllSessionCleanup()
+
+        XCTAssertEqual(coordinator.state, .failed(.listenerDisabled))
+        XCTAssertEqual(overlay.dismissalCount, 1)
+    }
+
+    func testOverlaySetupFailureCancelsPendingHandoff() async {
+        let shortcut = ShortcutStub()
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: PreReadyFailingOverlayStub(),
+            extractor: ExtractorStub(behavior: .succeed("unused")),
+            clipboard: ClipboardStub(),
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+
+        XCTAssertTrue(shortcut.trigger())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .failed(.overlayFailed))
+        XCTAssertEqual(shortcut.completedActivations, [])
+        XCTAssertEqual(shortcut.cancelledActivations, [GridActivation(generation: 1)])
+    }
+
+    func testListenerCanBeExplicitlyReinstalledAfterDisablement() async {
+        let shortcut = ShortcutStub()
+        let coordinator = makeCoordinator(
+            shortcut: shortcut,
+            permission: PermissionStub(status: .granted),
+            overlay: ImmediateOverlayStub(result: .cancelled),
+            extractor: ExtractorStub(behavior: .succeed("unused")),
+            clipboard: ClipboardStub(),
+            states: StateRecorder()
+        )
+        XCTAssertTrue(coordinator.installShortcut())
+        shortcut.triggerListenerDisabled()
+        XCTAssertEqual(coordinator.state, .failed(.listenerDisabled))
+        XCTAssertEqual(shortcut.unregisterCount, 1)
+
+        XCTAssertTrue(coordinator.installShortcut())
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
     private func makeCoordinator(
         shortcut: ShortcutStub,
         permission: PermissionStub,
@@ -714,14 +827,18 @@ private enum TestFailure: Error, Sendable {
 @MainActor
 private final class ShortcutStub: SelectionShortcutRegistering {
     var shouldFailRegistration = false
-    private var handler: (@MainActor @Sendable () -> Void)?
+    private var handler: (@MainActor @Sendable (SelectionShortcutEvent) -> Void)?
     private var registeredHandlers: [
-        @MainActor @Sendable () -> Void
+        @MainActor @Sendable (SelectionShortcutEvent) -> Void
     ] = []
     private(set) var unregisterCount = 0
+    private var nextGeneration: UInt64 = 0
+    var handoffCommands: [GridHandoffCommand] = []
+    private(set) var completedActivations: [GridActivation] = []
+    private(set) var cancelledActivations: [GridActivation] = []
 
-    func registerActivationHandler(
-        _ handler: @escaping @MainActor @Sendable () -> Void
+    func registerEventHandler(
+        _ handler: @escaping @MainActor @Sendable (SelectionShortcutEvent) -> Void
     ) throws {
         if shouldFailRegistration {
             throw TestFailure.expected
@@ -735,12 +852,25 @@ private final class ShortcutStub: SelectionShortcutRegistering {
         handler = nil
     }
 
+    func completeHandoff(for activation: GridActivation) -> [GridHandoffCommand]? {
+        completedActivations.append(activation)
+        return handoffCommands
+    }
+
+    func cancelHandoff(
+        for activation: GridActivation,
+        reason: GridActivationCancellationReason
+    ) {
+        cancelledActivations.append(activation)
+    }
+
     @discardableResult
     func trigger() -> Bool {
         guard let handler else {
             return false
         }
-        handler()
+        nextGeneration += 1
+        handler(.activated(testSourceContext(generation: nextGeneration)))
         return true
     }
 
@@ -749,8 +879,32 @@ private final class ShortcutStub: SelectionShortcutRegistering {
         guard registeredHandlers.indices.contains(index) else {
             return false
         }
-        registeredHandlers[index]()
+        nextGeneration += 1
+        registeredHandlers[index](
+            .activated(testSourceContext(generation: nextGeneration))
+        )
         return true
+    }
+
+    func triggerListenerDisabled() {
+        handler?(.listenerDisabled)
+    }
+
+    private func testSourceContext(generation: UInt64) -> ActivationSourceContext {
+        ActivationSourceContext(
+            activation: GridActivation(generation: generation),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+            displays: [
+                DisplayGeometry(
+                    displayID: 1,
+                    appKitFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+                    coreGraphicsBounds: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+                    backingScale: 2
+                ),
+            ],
+            caretCandidate: nil
+        )
     }
 }
 
@@ -803,6 +957,49 @@ private final class ImmediateOverlayStub: SelectionOverlayPresenting {
     func emitDrag(_ rectangle: SelectionRectangle) {
         dragHandler?(rectangle)
     }
+}
+
+@MainActor
+private final class HandoffCapturingOverlayStub: SelectionOverlayPresenting {
+    private(set) var handoffCommands: [GridHandoffCommand]?
+    private(set) var sourceContext: ActivationSourceContext?
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        self.sourceContext = sourceContext
+        handoffCommands = onReady()
+        return .cancelled
+    }
+
+    func select(
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        .cancelled
+    }
+
+    func dismissSelection() {}
+}
+
+@MainActor
+private final class PreReadyFailingOverlayStub: SelectionOverlayPresenting {
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        throw TestFailure.expected
+    }
+
+    func select(
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        throw TestFailure.expected
+    }
+
+    func dismissSelection() {}
 }
 
 @MainActor

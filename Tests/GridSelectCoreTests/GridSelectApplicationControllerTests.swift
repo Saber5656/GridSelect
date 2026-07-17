@@ -4,7 +4,31 @@ import XCTest
 
 @MainActor
 final class GridSelectApplicationControllerTests: XCTestCase {
-    func testShortcutRunsOverlayExtractionFormattingCopyAndSuccessStatus() async {
+    func testManualActivationUsesUnboundOverlayPath() async {
+        let clipboard = ApplicationClipboardStub()
+        let rectangle = SelectionRectangle(
+            displayID: 1,
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40
+        )
+        let controller = GridSelectApplicationController(
+            shortcut: ApplicationShortcutStub(),
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .confirmed(rectangle)),
+            extractor: ApplicationExtractorStub(text: "manual"),
+            clipboard: clipboard
+        )
+
+        XCTAssertTrue(controller.activateSelection())
+        await waitForTerminalState(controller)
+
+        XCTAssertEqual(controller.statusModel.snapshot.selectionState, .completed)
+        XCTAssertEqual(clipboard.values, ["manual"])
+    }
+
+    func testShortcutRejectsUnboundConfirmationBeforeExtractionOrCopy() async {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
         let permissionSetup = ApplicationPermissionSetupPresenterStub()
@@ -22,17 +46,20 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertTrue(shortcut.trigger())
         await waitForTerminalState(controller)
 
-        XCTAssertEqual(clipboard.values, ["alpha  \nbravo  "])
-        XCTAssertEqual(controller.statusModel.snapshot.selectionState, .completed)
-        XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Copied to clipboard")
+        XCTAssertTrue(clipboard.values.isEmpty)
+        XCTAssertEqual(
+            controller.statusModel.snapshot.selectionState,
+            .failed(.extractionFailed)
+        )
+        XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Text could not be read")
         XCTAssertEqual(
             controller.statusModel.snapshot.shortcutStatus,
-            .active(displayName: "⌘⇧G")
+            .active(displayName: "Double-Shift")
         )
         XCTAssertEqual(permissionSetup.presentationCount, 0)
     }
 
-    func testPasteboardFailureSurfacesInStatusWithoutCrash() async {
+    func testUnboundShortcutNeverAttemptsFailingPasteboard() async {
         let shortcut = ApplicationShortcutStub()
         let clipboard = ApplicationClipboardStub()
         clipboard.shouldFail = true
@@ -51,9 +78,10 @@ final class GridSelectApplicationControllerTests: XCTestCase {
 
         XCTAssertEqual(
             controller.statusModel.snapshot.selectionState,
-            .failed(.clipboardWriteFailed)
+            .failed(.extractionFailed)
         )
-        XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Copy failed")
+        XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Text could not be read")
+        XCTAssertTrue(clipboard.values.isEmpty)
     }
 
     func testShortcutCancellationSkipsExtractionAndClipboard() async {
@@ -100,6 +128,8 @@ final class GridSelectApplicationControllerTests: XCTestCase {
             .failed(.extractionFailed)
         )
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Text could not be read")
+        let extractionCallCount = await extractor.callCount()
+        XCTAssertEqual(extractionCallCount, 0)
         XCTAssertTrue(clipboard.values.isEmpty)
     }
 
@@ -165,9 +195,59 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertFalse(controller.start())
         XCTAssertEqual(
             controller.statusModel.snapshot.shortcutStatus,
-            .registrationFailed(displayName: "⌘⇧G")
+            .registrationFailed(displayName: "Double-Shift")
         )
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Shortcut unavailable")
+    }
+
+    func testInputMonitoringRegistrationFailureIsSurfacedWithRecoveryGuidance() {
+        let shortcut = ApplicationShortcutStub()
+        shortcut.registrationError = MacOSGlobalShortcutError.inputMonitoringRequired
+        let controller = GridSelectApplicationController(
+            shortcut: shortcut,
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .cancelled),
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+
+        XCTAssertFalse(controller.start())
+        XCTAssertEqual(
+            controller.statusModel.snapshot.shortcutStatus,
+            .inputMonitoringRequired(displayName: "Double-Shift")
+        )
+        XCTAssertTrue(controller.statusModel.snapshot.statusDetail.contains("Input Monitoring"))
+        XCTAssertTrue(controller.statusModel.snapshot.statusDetail.contains("Recheck Permissions"))
+
+        shortcut.registrationError = nil
+        XCTAssertTrue(controller.start())
+        XCTAssertEqual(
+            controller.statusModel.snapshot.shortcutStatus,
+            .active(displayName: "Double-Shift")
+        )
+    }
+
+    func testListenerDisableMarksShortcutInactive() {
+        let shortcut = ApplicationShortcutStub()
+        let controller = GridSelectApplicationController(
+            shortcut: shortcut,
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .cancelled),
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+
+        XCTAssertTrue(controller.start())
+        shortcut.triggerListenerDisabled()
+
+        XCTAssertEqual(
+            controller.statusModel.snapshot.shortcutStatus,
+            .inactive(displayName: "Double-Shift")
+        )
+        XCTAssertEqual(
+            controller.statusModel.snapshot.selectionState,
+            .failed(.listenerDisabled)
+        )
     }
 
     private func waitForTerminalState(_ controller: GridSelectApplicationController) async {
@@ -184,11 +264,14 @@ private enum ApplicationTestError: Error {
 @MainActor
 private final class ApplicationShortcutStub: SelectionShortcutRegistering {
     var shouldFail = false
-    private var handler: (@MainActor @Sendable () -> Void)?
+    var registrationError: (any Error)?
+    private var handler: (@MainActor @Sendable (SelectionShortcutEvent) -> Void)?
+    private var nextGeneration: UInt64 = 0
 
-    func registerActivationHandler(
-        _ handler: @escaping @MainActor @Sendable () -> Void
+    func registerEventHandler(
+        _ handler: @escaping @MainActor @Sendable (SelectionShortcutEvent) -> Void
     ) throws {
+        if let registrationError { throw registrationError }
         if shouldFail { throw ApplicationTestError.expected }
         self.handler = handler
     }
@@ -199,8 +282,30 @@ private final class ApplicationShortcutStub: SelectionShortcutRegistering {
 
     func trigger() -> Bool {
         guard let handler else { return false }
-        handler()
+        nextGeneration += 1
+        handler(.activated(testSourceContext(generation: nextGeneration)))
         return true
+    }
+
+    func triggerListenerDisabled() {
+        handler?(.listenerDisabled)
+    }
+
+    private func testSourceContext(generation: UInt64) -> ActivationSourceContext {
+        ActivationSourceContext(
+            activation: GridActivation(generation: generation),
+            source: SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7),
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+            displays: [
+                DisplayGeometry(
+                    displayID: 1,
+                    appKitFrame: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+                    coreGraphicsBounds: ScreenRectangle(x: 0, y: 0, width: 100, height: 100),
+                    backingScale: 2
+                ),
+            ],
+            caretCandidate: nil
+        )
     }
 }
 

@@ -21,14 +21,29 @@ Run manual checks from a normal macOS GUI session.
 
 | Setup item | Required action | Expected result |
 |---|---|---|
+| Input Monitoring | Grant Input Monitoring to the stable GridSelect build identity after reading the in-app explanation. Grant Accessibility separately for AX text/caret access; record actual active-filter TCC behavior instead of assuming the two gates are interchangeable. | GridSelect detects double-Shift; during the bounded pre-overlay handoff only Arrow, Command-C, and Escape are held as semantic commands, while ordinary input and Shift release pass through. |
 | Accessibility | Grant Accessibility permission to the GridSelect build or the probe host used for validation. | AX reads can inspect text-bearing elements after an explicit selection action. |
 | Screen Recording | Do not grant or require it for MVP text extraction. | GridSelect does not use screenshots, OCR, PDF parsing, or image analysis. |
-| Shortcut path | Use the MVP hot-key path when available, or invoke the prototype manually while scaffolding is incomplete. | Selection starts without requiring Input Monitoring for the primary shortcut path. |
+| Grid activation | Double-tap Shift using the production listener. Do not use the historical Command-Shift-G prototype as MVP evidence. | Grid mode enters only for the valid gesture; missing/revoked Input Monitoring remains an explicit blocked state. |
 | Font and wrapping | Use a monospace font and disable soft wrapping where the target app allows it. | Visual rows and columns remain stable while selecting. |
 | Window layout | Make the text region wide enough to display the fixture without wrapping. | Expected columns are visible in one fixed-width grid. |
 
-If Accessibility permission is unavailable, record the target as `blocked` and
-include the permission evidence instead of treating the app as unsupported.
+If Input Monitoring or Accessibility is unavailable, record the affected path as
+`blocked` and include permission evidence instead of treating the target app as
+unsupported.
+
+Run the mouse path for every target category: double-Shift, first click at the
+fixture anchor, drag to the documented half-open range, release, verify that the
+rectangle remains visible and the clipboard is unchanged, then press Command-C.
+Run the keyboard caret path at minimum in TextEdit plain-text mode. Record
+`unsupportedCaret` separately when a target supports mouse rectangle extraction
+but does not expose reliable insertion-caret geometry.
+
+For the activation handoff check, press an Arrow immediately with the second
+Shift still held, before the overlay could reasonably finish animating. The
+source app's native selection must not move; the direction must appear in the
+Grid selection after readiness. Repeat with Escape and Command-C, then verify an
+ordinary letter cancels the pending Grid session and still reaches the source app.
 
 ## Fixture Convention
 
@@ -60,10 +75,10 @@ clipboard pasteboard representation is intentionally deferred to issue #10.
 
 | Target category | Representative macOS apps/examples | Fixture | Setup | Manual QA steps | Expected observations |
 |---|---|---|---|---|---|
-| Terminal | Terminal.app primary; iTerm2 optional; Warp tracked separately because GPU/custom rendering may expose different AX metadata. | `terminal-aligned-output` | Open a terminal with a monospace font. Ensure the window is wide enough and the fixture is not wrapped. Run `clear`, then render the fixture with `cat tests/fixtures/rectangular-text/terminal-aligned-output/input.txt` or a full-screen viewer. | Activate GridSelect and drag over rows `[2, 6)` and columns `[6, 24)` relative to the first visible fixture content row, not the shell prompt or command row. Paste into a scratch text file and compare with `tests/fixtures/rectangular-text/terminal-aligned-output/expected.txt`. | A supported terminal exposes visible text, range text, range bounds, and stable line geometry. The pasted result matches the fixture exactly. |
-| Log viewer | Console.app for native log-viewer capability observation; Terminal.app running `less` over the fixture as the built-in reproducible log-viewer path; third-party native log viewers optional. | `log-viewer-syslog` | For the reproducible path, run `less tests/fixtures/rectangular-text/log-viewer-syslog/input.log` in Terminal.app with wrapping disabled. For Console.app, open the fixture or equivalent visible monospace log rows if supported. | Select rows `[1, 5)` and columns `[20, 42)`, paste into a scratch text file, and compare with `expected.txt`. Record Console.app separately as supported, partial, unsupported, or blocked based on AX capability. | The reproducible log-viewer path extracts level, service, and event columns. Native log viewers pass only when their visible rows expose text with usable range geometry. |
-| Editor | TextEdit in plain-text mode with a monospace font; CotEditor/BBEdit optional native examples; VS Code/Cursor optional custom/Electron examples. | `editor-fixed-width-table` | Open `tests/fixtures/rectangular-text/editor-fixed-width-table/input.txt` in the editor, use a monospace font, and disable soft wrapping. | Select rows `[0, 5)` and columns `[17, 24)`, paste into a scratch text file, and compare with `tests/fixtures/rectangular-text/editor-fixed-width-table/expected.txt`. | Native text views are expected to expose AX text roles and range geometry. Custom editors may be partial or unsupported; record exact attributes when available. |
-| Browser plain-text area | Safari and Chrome showing the local fixture page; `<textarea>` is the primary target and `<pre>` can be observed as a secondary target. | `browser-plain-text-area` | Open `tests/fixtures/rectangular-text/browser-plain-text-area/fixture.html`, click the textarea, keep browser zoom at 100%, and avoid page wrapping. | Select rows `[0, 5)` and columns `[16, 25)`, paste into a scratch text file, and compare with `expected.txt`. Repeat on `<pre>` only as an observation if time allows. | Plain browser text areas or `<pre>` content may be supported when the browser exposes useful AX text and bounds. Canvas or virtualized browser content is unsupported for MVP. |
+| Terminal | Terminal.app primary; iTerm2 optional; Warp tracked separately because GPU/custom rendering may expose different AX metadata. | `terminal-aligned-output` | Open a terminal with a monospace font. Ensure the window is wide enough and the fixture is not wrapped. Run `clear`, then render the fixture with `cat tests/fixtures/rectangular-text/terminal-aligned-output/input.txt` or a full-screen viewer. | Enter Grid mode, mouse-anchor at row 2 / column boundary 6 and drag focus to row 5 / column boundary 24, producing rows `[2, 6)` and columns `[6, 24)`. Release to freeze, then Command-C. Record keyboard caret support separately if the terminal exposes a reliable insertion caret. | A supported terminal exposes visible text, range text, range bounds, and stable line geometry. The frozen selection does not copy early; the pasted result matches the fixture exactly. |
+| Log viewer | Console.app for native log-viewer capability observation; Terminal.app running `less` over the fixture as the built-in reproducible log-viewer path; third-party native log viewers optional. | `log-viewer-syslog` | For the reproducible path, run `less tests/fixtures/rectangular-text/log-viewer-syslog/input.log` in Terminal.app with wrapping disabled. For Console.app, open the fixture or equivalent visible monospace log rows if supported. | Mouse-anchor at row 1 / column boundary 20 and drag focus to row 4 / column boundary 42, producing rows `[1, 5)` and columns `[20, 42)`. Freeze, Command-C, and compare with `expected.txt`. Record Console.app capability separately. | The reproducible log-viewer path extracts level, service, and event columns. Native log viewers pass only when their visible rows expose text with usable range geometry. |
+| Editor | TextEdit in plain-text mode with a monospace font; CotEditor/BBEdit optional native examples; VS Code/Cursor optional custom/Electron examples. | `editor-fixed-width-table` | Open `tests/fixtures/rectangular-text/editor-fixed-width-table/input.txt` in the editor, use a monospace font, disable soft wrapping, and place the insertion caret at row 0 / column boundary 17. | Keyboard: enter Grid mode, press Right 7 times and Down 4 times while holding the second Shift, producing rows `[0, 5)` / columns `[17, 24)`, then release Shift. Mouse: drag from row 0 / boundary 17 to row 4 / boundary 24. Verify both freeze without copying, then Command-C and compare with `expected.txt`. | TextEdit is the required keyboard-caret evidence target. Both paths must produce the same output without changing native selection. Custom editors may be partial or `unsupportedCaret`; record exact AX attributes. |
+| Browser plain-text area | Safari and Chrome showing the local fixture page; `<textarea>` is the primary target and `<pre>` can be observed as a secondary target. | `browser-plain-text-area` | Open `tests/fixtures/rectangular-text/browser-plain-text-area/fixture.html`, click the textarea, keep browser zoom at 100%, and avoid page wrapping. | Mouse-anchor at row 0 / column boundary 16 and drag focus to row 4 / boundary 25, producing rows `[0, 5)` and columns `[16, 25)`. Freeze, Command-C, and compare with `expected.txt`. Repeat keyboard caret selection when reliable; `<pre>` is observational. | Plain browser text areas or `<pre>` content may be supported when the browser exposes useful AX text and bounds. Canvas or virtualized browser content is unsupported for MVP. |
 
 ## Result Classification
 
@@ -73,9 +88,10 @@ manual QA logs:
 | Result | Meaning |
 |---|---|
 | `supported` | The app exposes range text and range geometry, and the pasted output matches the expected fixture. |
+| `unsupportedCaret` | Mouse rectangle extraction is supported, but keyboard anchoring is unavailable because reliable insertion-caret geometry is not exposed. |
 | `partial` | The app exposes some useful text metadata, but the fixture output is incomplete, shifted, wrapped, or requires a fallback path. |
 | `unsupported` | The app does not expose the text/range geometry needed for the MVP, or it uses custom/canvas/image rendering. |
-| `blocked` | The run could not reach a capability result because of missing Accessibility permission, unavailable app, or an environment issue. |
+| `blocked` | The run could not reach a capability result because Input Monitoring or Accessibility is missing/revoked, the app is unavailable, or an environment issue prevents the run. |
 
 ## Unsupported Or Deferred Categories
 
@@ -93,6 +109,21 @@ handle them while validating issue #11 fixtures.
 | Secure text fields and password managers | Unsupported | GridSelect must never attempt to bypass secure input protections. |
 | Proportional or wrapped rich text | Deferred | MVP assumes stable monospace character width and line height within the selected region. |
 
+### Required secure-text negative check
+
+Use only a dummy password in an OS or test application's secure text field;
+never use a password manager record or real credential.
+
+| Action | Expected evidence |
+|---|---|
+| Record current pasteboard change count/value in a scratch-safe way, focus the dummy secure field, then double-Shift | GridSelect reports a coarse `secure text unsupported` status. No selection overlay, caret/text extraction, or copy session starts. |
+| Press Arrow and Command-C after the rejected gesture | GridSelect does not read or log key content, does not write the pasteboard, and does not leave a stale overlay/session. Normal app behavior remains outside Grid mode. |
+| Inspect production diagnostics | No PID, bundle/window title, caret/rectangle coordinate, key code/character, secure value, extracted text, or clipboard value is present. |
+
+Permission missing/revoked, listener-disable, responder-loss, display-change, and
+copy-failure cleanup remain lifecycle evidence under issues #12/#13/#15/#16 and
+must be recorded alongside the target-app results before those issues close.
+
 ## Manual QA Evidence Template
 
 Copy this table into an issue comment or task record when a contributor runs a
@@ -106,8 +137,13 @@ manual check.
 | Target app and version |  |
 | Fixture |  |
 | Accessibility trusted |  |
+| Input Monitoring granted |  |
+| Grid activation listener active |  |
 | Font, size, wrapping, zoom |  |
 | Selected rows/columns |  |
+| Input path (`keyboard` / `mouse`) |  |
+| Frozen before Command-C |  |
+| Source selection unchanged |  |
 | Result classification |  |
 | Expected output matched |  |
 | AX attributes observed |  |
