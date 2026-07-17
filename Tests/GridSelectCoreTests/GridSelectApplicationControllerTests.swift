@@ -328,6 +328,35 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusModel.snapshot.statusTitle, "Shortcut unavailable")
     }
 
+    func testInputMonitoringRegistrationFailureIsSurfacedWithRecoveryGuidance() {
+        let shortcut = ApplicationShortcutStub()
+        shortcut.registrationError = MacOSGlobalShortcutError.inputMonitoringRequired
+        let permission = ApplicationPermissionStub(status: .granted)
+        let controller = GridSelectApplicationController(
+            statusModel: deterministicStatusModel(permission: permission),
+            shortcut: shortcut,
+            permissionChecker: permission,
+            overlay: ApplicationOverlayStub(result: .cancelled),
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+
+        XCTAssertFalse(controller.start())
+        XCTAssertEqual(
+            controller.statusModel.snapshot.shortcutStatus,
+            .inputMonitoringRequired(displayName: "Double-Shift")
+        )
+        XCTAssertTrue(controller.statusModel.snapshot.statusDetail.contains("Input Monitoring"))
+        XCTAssertTrue(controller.statusModel.snapshot.statusDetail.contains("Recheck Permissions"))
+
+        shortcut.registrationError = nil
+        XCTAssertTrue(controller.start())
+        XCTAssertEqual(
+            controller.statusModel.snapshot.shortcutStatus,
+            .active(displayName: "Double-Shift")
+        )
+    }
+
     func testManualCaptureFailureSurfacesActionableStatus() {
         let controller = GridSelectApplicationController(
             shortcut: ApplicationShortcutStub(),
@@ -459,6 +488,7 @@ private enum ApplicationTestError: Error {
 @MainActor
 private final class ApplicationShortcutStub: SelectionShortcutRegistering {
     var shouldFail = false
+    var registrationError: (any Error)?
     private(set) var registrationCount = 0
     private(set) var unregisterCount = 0
     private var handler: (@MainActor @Sendable (SelectionShortcutEvent) -> Void)?
@@ -467,6 +497,7 @@ private final class ApplicationShortcutStub: SelectionShortcutRegistering {
     func registerEventHandler(
         _ handler: @escaping @MainActor @Sendable (SelectionShortcutEvent) -> Void
     ) throws {
+        if let registrationError { throw registrationError }
         if shouldFail { throw ApplicationTestError.expected }
         registrationCount += 1
         self.handler = handler

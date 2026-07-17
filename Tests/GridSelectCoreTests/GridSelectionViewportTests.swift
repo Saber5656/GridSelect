@@ -133,4 +133,18 @@ final class GridSelectionViewportTests: XCTestCase {
             )
         )
     }
+
+    func testMaximumColumnUsesLastBoundaryInsideNonAlignedDisplayEdge() {
+        let viewport = GridSelectionViewport(
+            displayID: 1,
+            originX: 103,
+            topY: 500,
+            characterWidth: 10,
+            lineHeight: 20,
+            visualRowCount: 5
+        )
+        let frame = ScreenRectangle(x: 0, y: 0, width: 500, height: 500)
+
+        XCTAssertEqual(viewport.maximumColumn(within: frame), 39)
+    }
 }

@@ -90,11 +90,16 @@ public struct GridOverlayInteraction: Equatable, Sendable {
         _ direction: GridDirection
     ) -> GridOverlayInteractionEffect? {
         guard let selection = currentSelection,
-              let viewport = binder.boundContext?.viewport
+              let context = binder.boundContext,
+              let viewport = context.viewport,
+              let maximumColumn = viewport.maximumColumn(within: context.display.appKitFrame)
         else {
             return nil
         }
         if direction == .down, selection.focus.row >= viewport.visualRowCount - 1 {
+            return nil
+        }
+        if direction == .right, selection.focus.column >= maximumColumn {
             return nil
         }
         return translate(lifecycle.moveKeyboardFocus(direction))
@@ -108,10 +113,21 @@ public struct GridOverlayInteraction: Equatable, Sendable {
               let anchor = candidate.viewport.boundary(
                   at: point,
                   role: .initialAnchor
+              ),
+              let display = sourceContext.displays.first(where: {
+                  $0.displayID == candidate.viewport.displayID
+              }),
+              let maximumColumn = candidate.viewport.maximumColumn(
+                  within: display.appKitFrame
               )
         else {
             return .rejected
         }
+
+        let boundedAnchor = GridBoundary(
+            row: anchor.row,
+            column: min(anchor.column, maximumColumn)
+        )
 
         if let bound = binder.boundContext {
             let matchesBoundContext = bound.source == candidate.source
@@ -131,7 +147,7 @@ public struct GridOverlayInteraction: Equatable, Sendable {
             guard case .bound = binder.rebindMouseAnchor(
                       source: candidate.source,
                       element: candidate.element,
-                      anchor: anchor,
+                      anchor: boundedAnchor,
                       sourceRange: candidate.sourceRange,
                       displayID: candidate.viewport.displayID,
                       viewport: candidate.viewport
@@ -142,7 +158,7 @@ public struct GridOverlayInteraction: Equatable, Sendable {
             guard case .bound = binder.bindMouseAnchor(
                 source: candidate.source,
                 element: candidate.element,
-                anchor: anchor,
+                anchor: boundedAnchor,
                 sourceRange: candidate.sourceRange,
                 displayID: candidate.viewport.displayID,
                 viewport: candidate.viewport
@@ -151,7 +167,7 @@ public struct GridOverlayInteraction: Equatable, Sendable {
             }
         }
 
-        guard let effect = translate(lifecycle.beginMouseSelection(at: anchor)) else {
+        guard let effect = translate(lifecycle.beginMouseSelection(at: boundedAnchor)) else {
             return .ignored
         }
         return .accepted(effect)
@@ -163,13 +179,18 @@ public struct GridOverlayInteraction: Equatable, Sendable {
         guard let selection = currentSelection,
               let context = binder.boundContext,
               let viewport = context.viewport,
-              let focus = viewport.boundary(
+              let maximumColumn = viewport.maximumColumn(within: context.display.appKitFrame),
+              let snappedFocus = viewport.boundary(
                   at: clamped(point, to: context.display.appKitFrame),
                   role: .focus(anchorColumn: selection.anchor.column)
               )
         else {
             return nil
         }
+        let focus = GridBoundary(
+            row: snappedFocus.row,
+            column: min(snappedFocus.column, maximumColumn)
+        )
         return translate(lifecycle.moveMouseFocus(to: focus))
     }
 
