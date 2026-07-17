@@ -69,7 +69,11 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
             guard let focused = client.focusedElement(
                 inProcess: pid_t(source.processIdentifier),
                 messagingTimeout: limits.perMessageTimeout
-            ), let preflightWindow = client.window(of: focused) else {
+            ) else {
+                return .unavailable
+            }
+            client.setMessagingTimeout(limits.perMessageTimeout, for: focused)
+            guard let preflightWindow = client.window(of: focused) else {
                 return .unavailable
             }
             guard windowValidator(source, sourceWindowFrame),
