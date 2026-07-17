@@ -75,6 +75,8 @@ private struct GridSelectMenuView: View {
             return "Shortcut not active: \(displayName)"
         case let .registrationFailed(displayName):
             return "Shortcut unavailable: \(displayName)"
+        case let .inputMonitoringRequired(displayName):
+            return "Shortcut inactive: \(displayName) (Input Monitoring required)"
         }
     }
 }
@@ -128,8 +130,11 @@ private struct GridSelectSettingsView: View {
                 }
             }
 
-            Button("Recheck Accessibility") {
+            Button("Recheck Permissions") {
                 statusModel.recheckPermission()
+                if case .inputMonitoringRequired = statusModel.snapshot.shortcutStatus {
+                    controller.start()
+                }
             }
 
             Button("Start Selection") {
@@ -149,6 +154,8 @@ private struct GridSelectSettingsView: View {
             return "\(displayName) (not active)"
         case let .registrationFailed(displayName):
             return "\(displayName) (registration failed)"
+        case let .inputMonitoringRequired(displayName):
+            return "\(displayName) (Input Monitoring required)"
         }
     }
 }

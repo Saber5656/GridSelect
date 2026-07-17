@@ -128,6 +128,7 @@ public protocol ClipboardWriting: AnyObject {
 @MainActor
 public final class SelectionModeCoordinator {
     public private(set) var state: SelectionModeState = .idle
+    public private(set) var shortcutRegistrationError: (any Error)?
 
     private let shortcut: any SelectionShortcutRegistering
     private let permissionChecker: any SelectionPermissionChecking
@@ -179,6 +180,7 @@ public final class SelectionModeCoordinator {
                 )
             }
             isShortcutInstalled = true
+            shortcutRegistrationError = nil
             if state == .failed(.shortcutRegistrationFailed)
                 || state == .failed(.listenerDisabled)
             {
@@ -186,6 +188,7 @@ public final class SelectionModeCoordinator {
             }
             return true
         } catch {
+            shortcutRegistrationError = error
             transition(to: .failed(.shortcutRegistrationFailed))
             return false
         }

@@ -2,12 +2,14 @@ public enum ShortcutReadiness: Equatable, Sendable {
     case active(displayName: String)
     case inactive(displayName: String)
     case registrationFailed(displayName: String)
+    case inputMonitoringRequired(displayName: String)
 
     public var displayName: String {
         switch self {
         case let .active(displayName),
              let .inactive(displayName),
-             let .registrationFailed(displayName):
+             let .registrationFailed(displayName),
+             let .inputMonitoringRequired(displayName):
             return displayName
         }
     }
@@ -43,6 +45,11 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
     }
 
     public var statusTitle: String {
+        if case .inputMonitoringRequired = shortcutStatus,
+           selectionState == .failed(.shortcutRegistrationFailed)
+        {
+            return "Input Monitoring required"
+        }
         switch selectionState {
         case .selecting, .dragging, .confirmed, .extracting, .copying:
             return "Selection in progress"
@@ -69,10 +76,17 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
             return "Shortcut not active"
         case .registrationFailed:
             return "Shortcut unavailable"
+        case .inputMonitoringRequired:
+            return "Input Monitoring required"
         }
     }
 
     public var statusDetail: String {
+        if case .inputMonitoringRequired = shortcutStatus,
+           selectionState == .failed(.shortcutRegistrationFailed)
+        {
+            return Self.inputMonitoringGuidance
+        }
         switch selectionState {
         case .completed:
             return "The rectangular text selection was copied successfully."
@@ -99,6 +113,8 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
             return "The shortcut \(shortcutStatus.displayName) is currently inactive."
         case .registrationFailed:
             return "GridSelect could not register \(shortcutStatus.displayName). Shortcut configuration is not available in this pre-alpha build."
+        case .inputMonitoringRequired:
+            return Self.inputMonitoringGuidance
         }
     }
 
@@ -143,6 +159,8 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
 
     public static let accessibilityGuidance =
         "Open System Settings, then go to Privacy & Security > Accessibility and enable GridSelect."
+    public static let inputMonitoringGuidance =
+        "Open System Settings, then go to Privacy & Security > Input Monitoring, enable GridSelect, and use Recheck Permissions."
 }
 
 private extension SelectionModeFailure {
