@@ -194,7 +194,7 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
     public static let accessibilityGuidance =
         "Open System Settings, then go to Privacy & Security > Accessibility and enable GridSelect, then recheck."
     public static let inputMonitoringGuidance =
-        "Open System Settings, then go to Privacy & Security > Input Monitoring, enable GridSelect, and use Recheck Permissions."
+        "Open System Settings, then go to Privacy & Security > Input Monitoring, enable GridSelect, and use Recheck Permissions to recheck."
 }
 
 private extension ShortcutReadiness {
