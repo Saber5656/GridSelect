@@ -7,9 +7,29 @@ enum MacOSSelectionOverlayError: Error, Equatable {
 }
 
 @MainActor
+protocol MacOSGridMouseAnchorResolving: AnyObject {
+    func resolveMouseAnchor(
+        at appKitScreenPoint: SelectionPoint,
+        sourceContext: ActivationSourceContext
+    ) -> GridMouseAnchorCandidate?
+}
+
+@MainActor
+private final class UnavailableGridMouseAnchorResolver: MacOSGridMouseAnchorResolving {
+    func resolveMouseAnchor(
+        at appKitScreenPoint: SelectionPoint,
+        sourceContext: ActivationSourceContext
+    ) -> GridMouseAnchorCandidate? {
+        nil
+    }
+}
+
+@MainActor
 final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     private let minimumSelectionSize: Double
     private let panelLevel: NSWindow.Level
+    private let mouseAnchorResolver: any MacOSGridMouseAnchorResolving
+    private let hasGridMouseAnchorResolver: Bool
 
     private var panels: [SelectionOverlayPanel] = []
     private var localKeyMonitor: Any?
@@ -18,14 +38,20 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     private var continuation: CheckedContinuation<SelectionOverlayResult, any Error>?
     private var onDrag: (@MainActor @Sendable (SelectionRectangle) -> Void)?
     private var frozenRectangle: SelectionRectangle?
-    private var deferredHandoffCommands: [GridHandoffCommand] = []
+    private var sourceContext: ActivationSourceContext?
+    private var gridInteraction: GridOverlayInteraction?
+    private var sessionGuard = GridOverlaySessionGuard()
 
     init(
         minimumSelectionSize: Double = 4,
-        panelLevel: NSWindow.Level = .statusBar
+        panelLevel: NSWindow.Level = .statusBar,
+        mouseAnchorResolver: (any MacOSGridMouseAnchorResolving)? = nil
     ) {
         self.minimumSelectionSize = minimumSelectionSize
         self.panelLevel = panelLevel
+        hasGridMouseAnchorResolver = mouseAnchorResolver != nil
+        self.mouseAnchorResolver = mouseAnchorResolver
+            ?? UnavailableGridMouseAnchorResolver()
     }
 
     func select(
@@ -45,22 +71,35 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         guard !NSScreen.screens.isEmpty else {
             throw MacOSSelectionOverlayError.noScreensAvailable
         }
+        let sessionGeneration = sessionGuard.begin()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
                 self.onDrag = onDrag
-                presentPanels(preferredDisplayID: preferredDisplayID(for: sourceContext))
+                self.sourceContext = sourceContext
+                gridInteraction = Self.makeGridInteraction(
+                    sourceContext: sourceContext,
+                    hasMouseAnchorResolver: hasGridMouseAnchorResolver
+                )
+                presentPanels(
+                    preferredDisplayID: preferredDisplayID(for: sourceContext),
+                    sessionGeneration: sessionGeneration
+                )
                 guard verifyInputOwnership(), let commands = onReady() else {
-                    finish(with: .cancelled)
+                    finish(with: .cancelled, ifCurrent: sessionGeneration)
                     return
                 }
-                monitorOwnershipLoss()
+                monitorOwnershipLoss(sessionGeneration: sessionGeneration)
+                if let rectangle = gridInteraction?.currentRectangle {
+                    renderGridRectangle(rectangle)
+                    onDrag(rectangle)
+                }
                 applyHandoffCommands(commands)
             }
         } onCancel: {
             Task { @MainActor [weak self] in
-                self?.finish(with: .cancelled)
+                self?.finish(with: .cancelled, ifCurrent: sessionGeneration)
             }
         }
     }
@@ -84,6 +123,17 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     }
 
     private func applyHandoffCommands(_ commands: [GridHandoffCommand]) {
+        if var interaction = gridInteraction {
+            let effects = interaction.applyHandoffCommands(commands)
+            gridInteraction = interaction
+            for effect in effects {
+                applyGridEffect(effect)
+                guard continuation != nil else {
+                    return
+                }
+            }
+            return
+        }
         for command in commands {
             switch command {
             case .cancelRequested:
@@ -92,10 +142,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             case .copyRequested:
                 confirmFrozenSelectionIfPossible()
             case .freeze, .move:
-                // Issue #13 drains these into its caret/grid interaction model.
-                // Retain semantic commands until that adapter consumes them;
-                // never replay them to the source application.
-                deferredHandoffCommands.append(command)
+                break
             }
         }
     }
@@ -104,12 +151,23 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         finish(with: .cancelled)
     }
 
-    private func presentPanels(preferredDisplayID: UInt32?) {
-        panels = NSScreen.screens.map(makePanel)
+    private func presentPanels(
+        preferredDisplayID: UInt32?,
+        sessionGeneration: UInt64
+    ) {
+        let screens = NSScreen.screens
+        panels = screens.map {
+            makePanel(for: $0, sessionGeneration: sessionGeneration)
+        }
 
-        let preferredScreen = preferredDisplayID.flatMap { preferredDisplayID in
-            NSScreen.screens.first(where: { displayID(for: $0) == preferredDisplayID })
-        } ?? NSScreen.main ?? NSScreen.screens.first
+        let preferredScreen: NSScreen?
+        if let preferredDisplayID {
+            preferredScreen = screens.first {
+                displayID(for: $0) == preferredDisplayID
+            }
+        } else {
+            preferredScreen = NSScreen.main ?? screens.first
+        }
         guard let owningPanel = panels.first(where: { $0.screen === preferredScreen }),
               let contentView = owningPanel.contentView
         else {
@@ -119,14 +177,28 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         owningPanel.makeKey()
         owningPanel.makeFirstResponder(contentView)
 
-        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) {
             [weak self] event in
-            guard let self else {
+            guard let self,
+                  self.sessionGuard.isCurrent(sessionGeneration)
+            else {
                 return event
             }
             guard self.verifyInputOwnership() else {
-                self.finish(with: .cancelled)
-                return nil
+                self.finish(with: .cancelled, ifCurrent: sessionGeneration)
+                return event.type == .flagsChanged ? event : nil
+            }
+            if event.type == .flagsChanged {
+                if Self.isShiftRelease(
+                    keyCode: event.keyCode,
+                    modifierFlags: event.modifierFlags
+                ) {
+                    self.freezeGridSelection()
+                }
+                // The approved contract passes the second-Shift release through.
+                return event
             }
             if event.keyCode == 53 {
                 self.finish(with: .cancelled)
@@ -134,6 +206,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             }
             if event.keyCode == 8, event.modifierFlags.contains(.command) {
                 self.confirmFrozenSelectionIfPossible()
+                return nil
+            }
+            if let direction = Self.gridDirection(for: event.keyCode) {
+                self.moveGridSelection(direction)
                 return nil
             }
             return event
@@ -144,8 +220,8 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
-                self?.finish(with: .cancelled)
+            Task { @MainActor [weak self] in
+                self?.finish(with: .cancelled, ifCurrent: sessionGeneration)
             }
         }
     }
@@ -168,7 +244,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         })?.displayID
     }
 
-    private func monitorOwnershipLoss() {
+    private func monitorOwnershipLoss(sessionGeneration: UInt64) {
         guard let owningPanel = panels.first(where: \.isKeyWindow) else {
             finish(with: .cancelled)
             return
@@ -179,9 +255,23 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.finish(with: .cancelled)
+                guard let self,
+                      self.sessionGuard.isCurrent(sessionGeneration),
+                      !self.verifyInputOwnership()
+                else {
+                    return
+                }
+                self.finish(with: .cancelled, ifCurrent: sessionGeneration)
             }
         }
+    }
+
+    private func stopOwnershipLossMonitoring() {
+        guard let ownershipLossObserver else {
+            return
+        }
+        NotificationCenter.default.removeObserver(ownershipLossObserver)
+        self.ownershipLossObserver = nil
     }
 
     private func freeze(_ rectangle: SelectionRectangle) {
@@ -189,13 +279,24 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     }
 
     private func confirmFrozenSelectionIfPossible() {
+        if var interaction = gridInteraction {
+            let effect = interaction.requestCopy()
+            gridInteraction = interaction
+            if let effect {
+                applyGridEffect(effect)
+            }
+            return
+        }
         guard let frozenRectangle, !frozenRectangle.isEmpty else {
             return
         }
         finish(with: .confirmed(frozenRectangle))
     }
 
-    private func makePanel(for screen: NSScreen) -> SelectionOverlayPanel {
+    private func makePanel(
+        for screen: NSScreen,
+        sessionGeneration: UInt64
+    ) -> SelectionOverlayPanel {
         let geometry = SelectionDragGeometry(
             displayID: displayID(for: screen),
             screenOrigin: SelectionPoint(
@@ -208,17 +309,48 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         )
         let view = SelectionOverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
         view.geometry = geometry
+        view.usesGridInteraction = gridInteraction != nil
         view.onDrag = { [weak self] rectangle in
+            guard self?.sessionGuard.isCurrent(sessionGeneration) == true else {
+                return
+            }
             self?.onDrag?(rectangle)
         }
         view.onCancel = { [weak self] in
-            self?.finish(with: .cancelled)
+            self?.finish(with: .cancelled, ifCurrent: sessionGeneration)
         }
         view.onFreeze = { [weak self] rectangle in
+            guard self?.sessionGuard.isCurrent(sessionGeneration) == true else {
+                return
+            }
             self?.freeze(rectangle)
         }
         view.onCopy = { [weak self] in
+            guard self?.sessionGuard.isCurrent(sessionGeneration) == true else {
+                return
+            }
             self?.confirmFrozenSelectionIfPossible()
+        }
+        view.onGridMouseDown = { [weak self] point in
+            self?.beginGridMouseSelection(
+                at: point,
+                displayID: geometry.displayID,
+                sessionGeneration: sessionGeneration
+            )
+        }
+        view.onGridMouseDragged = { [weak self] point in
+            self?.moveGridMouseSelection(
+                to: point,
+                displayID: geometry.displayID,
+                sessionGeneration: sessionGeneration
+            )
+        }
+        view.onGridMouseUp = { [weak self] point in
+            self?.endGridMouseSelection(
+                at: point,
+                displayID: geometry.displayID,
+                sessionGeneration: sessionGeneration
+            )
         }
 
         let panel = SelectionOverlayPanel(
@@ -236,6 +368,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = false
         panel.contentView = view
+        panel.displayID = geometry.displayID
         panel.orderFrontRegardless()
         return panel
     }
@@ -247,8 +380,19 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         }
 
         self.continuation = nil
+        sessionGuard.invalidateCurrent()
         cleanup()
         continuation.resume(returning: result)
+    }
+
+    private func finish(
+        with result: SelectionOverlayResult,
+        ifCurrent sessionGeneration: UInt64
+    ) {
+        guard sessionGuard.isCurrent(sessionGeneration) else {
+            return
+        }
+        finish(with: result)
     }
 
     private func cleanup() {
@@ -272,16 +416,216 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         panels.removeAll()
         onDrag = nil
         frozenRectangle = nil
-        deferredHandoffCommands.removeAll(keepingCapacity: false)
+        sourceContext = nil
+        gridInteraction = nil
+        sessionGuard.invalidateCurrent()
     }
 
     private func displayID(for screen: NSScreen) -> UInt32 {
         let key = NSDeviceDescriptionKey("NSScreenNumber")
         return screen.deviceDescription[key] as? UInt32 ?? 0
     }
+
+    private static func gridDirection(for keyCode: UInt16) -> GridDirection? {
+        switch keyCode {
+        case 123: .left
+        case 124: .right
+        case 125: .down
+        case 126: .up
+        default: nil
+        }
+    }
+
+    static func makeGridInteraction(
+        sourceContext: ActivationSourceContext?,
+        hasMouseAnchorResolver: Bool
+    ) -> GridOverlayInteraction? {
+        sourceContext.flatMap { context in
+            let interaction = GridOverlayInteraction(sourceContext: context)
+            guard interaction.binder.boundContext != nil || hasMouseAnchorResolver else {
+                return nil
+            }
+            return interaction
+        }
+    }
+
+    static func isShiftRelease(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        (keyCode == 56 || keyCode == 60) && !modifierFlags.contains(.shift)
+    }
+
+    private func moveGridSelection(_ direction: GridDirection) {
+        guard var interaction = gridInteraction else {
+            return
+        }
+        let effect = interaction.moveKeyboardFocus(direction)
+        gridInteraction = interaction
+        if let effect {
+            applyGridEffect(effect)
+        }
+    }
+
+    private func freezeGridSelection() {
+        guard var interaction = gridInteraction else {
+            return
+        }
+        let effect = interaction.freeze()
+        gridInteraction = interaction
+        if let effect {
+            applyGridEffect(effect)
+        }
+    }
+
+    private func beginGridMouseSelection(
+        at point: SelectionPoint,
+        displayID: UInt32,
+        sessionGeneration: UInt64
+    ) {
+        guard sessionGuard.isCurrent(sessionGeneration) else {
+            return
+        }
+        sessionGuard.endMouseDrag(generation: sessionGeneration)
+        guard let sourceContext,
+              let candidate = mouseAnchorResolver.resolveMouseAnchor(
+                  at: point,
+                  sourceContext: sourceContext
+              )
+        else {
+            return
+        }
+        guard candidate.viewport.displayID == displayID,
+              makeOwningPanelKey(
+                  displayID: displayID,
+                  sessionGeneration: sessionGeneration
+              ),
+              var interaction = gridInteraction
+        else {
+            finish(with: .cancelled, ifCurrent: sessionGeneration)
+            return
+        }
+        let result = interaction.beginMouseSelection(candidate: candidate, at: point)
+        gridInteraction = interaction
+        switch result {
+        case let .accepted(effect):
+            _ = sessionGuard.beginMouseDrag(
+                displayID: displayID,
+                generation: sessionGeneration
+            )
+            applyGridEffect(effect)
+        case .ignored:
+            break
+        case .rejected:
+            finish(with: .cancelled, ifCurrent: sessionGeneration)
+        }
+    }
+
+    private func moveGridMouseSelection(
+        to point: SelectionPoint,
+        displayID: UInt32,
+        sessionGeneration: UInt64
+    ) {
+        guard sessionGuard.acceptsMouseEvent(
+                  displayID: displayID,
+                  generation: sessionGeneration
+              ),
+              var interaction = gridInteraction
+        else {
+            return
+        }
+        let effect = interaction.moveMouseFocus(to: point)
+        gridInteraction = interaction
+        if let effect {
+            applyGridEffect(effect)
+        }
+    }
+
+    private func endGridMouseSelection(
+        at point: SelectionPoint,
+        displayID: UInt32,
+        sessionGeneration: UInt64
+    ) {
+        guard sessionGuard.acceptsMouseEvent(
+                  displayID: displayID,
+                  generation: sessionGeneration
+              )
+        else {
+            return
+        }
+        moveGridMouseSelection(
+            to: point,
+            displayID: displayID,
+            sessionGeneration: sessionGeneration
+        )
+        freezeGridSelection()
+        sessionGuard.endMouseDrag(generation: sessionGeneration)
+    }
+
+    private func makeOwningPanelKey(
+        displayID: UInt32,
+        sessionGeneration: UInt64
+    ) -> Bool {
+        guard let panel = panels.first(where: { $0.displayID == displayID }),
+              let contentView = panel.contentView
+        else {
+            return false
+        }
+        stopOwnershipLossMonitoring()
+        panel.makeKey()
+        panel.makeFirstResponder(contentView)
+        guard verifyInputOwnership() else {
+            return false
+        }
+        monitorOwnershipLoss(sessionGeneration: sessionGeneration)
+        return true
+    }
+
+    private func applyGridEffect(_ effect: GridOverlayInteractionEffect) {
+        switch effect {
+        case let .selectionChanged(rectangle):
+            setGridStatusMessage(nil)
+            renderGridRectangle(rectangle)
+            onDrag?(rectangle)
+        case let .selectionFrozen(rectangle):
+            setGridStatusMessage(nil)
+            frozenRectangle = rectangle
+            renderGridRectangle(rectangle)
+            onDrag?(rectangle)
+        case .selectAtLeastOneColumn:
+            setGridStatusMessage("Select at least one column")
+        case let .copyRequested(rectangle, context):
+            finish(with: .boundConfirmed(rectangle, context))
+        case .cancelled:
+            finish(with: .cancelled)
+        }
+    }
+
+    private func renderGridRectangle(_ rectangle: SelectionRectangle) {
+        for panel in panels {
+            guard let view = panel.contentView as? SelectionOverlayView else {
+                continue
+            }
+            view.renderedRectangle = panel.displayID == rectangle.displayID
+                ? rectangle
+                : nil
+            view.needsDisplay = true
+        }
+    }
+
+    private func setGridStatusMessage(_ message: String?) {
+        for panel in panels {
+            guard let view = panel.contentView as? SelectionOverlayView else {
+                continue
+            }
+            view.statusMessage = message
+            view.needsDisplay = true
+        }
+    }
 }
 
 private final class SelectionOverlayPanel: NSPanel {
+    var displayID: UInt32 = 0
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
@@ -289,10 +633,16 @@ private final class SelectionOverlayPanel: NSPanel {
 @MainActor
 private final class SelectionOverlayView: NSView {
     var geometry: SelectionDragGeometry?
+    var usesGridInteraction = false
+    var renderedRectangle: SelectionRectangle?
+    var statusMessage: String?
     var onDrag: ((SelectionRectangle) -> Void)?
     var onCancel: (() -> Void)?
     var onFreeze: ((SelectionRectangle) -> Void)?
     var onCopy: (() -> Void)?
+    var onGridMouseDown: ((SelectionPoint) -> Void)?
+    var onGridMouseDragged: ((SelectionPoint) -> Void)?
+    var onGridMouseUp: ((SelectionPoint) -> Void)?
 
     private var anchor: SelectionPoint?
     private var current: SelectionPoint?
@@ -306,6 +656,10 @@ private final class SelectionOverlayView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if usesGridInteraction {
+            onGridMouseDown?(globalSelectionPoint(for: event))
+            return
+        }
         let point = selectionPoint(for: event)
         anchor = point
         current = point
@@ -313,6 +667,10 @@ private final class SelectionOverlayView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if usesGridInteraction {
+            onGridMouseDragged?(globalSelectionPoint(for: event))
+            return
+        }
         guard anchor != nil else {
             return
         }
@@ -324,6 +682,10 @@ private final class SelectionOverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if usesGridInteraction {
+            onGridMouseUp?(globalSelectionPoint(for: event))
+            return
+        }
         guard anchor != nil else {
             return
         }
@@ -370,11 +732,26 @@ private final class SelectionOverlayView: NSView {
         border.lineWidth = 2
         NSColor.systemBlue.setStroke()
         border.stroke()
+
+        if let statusMessage {
+            drawStatusMessage(statusMessage, above: rectangle)
+        }
     }
 
     private func selectionPoint(for event: NSEvent) -> SelectionPoint {
         let point = convert(event.locationInWindow, from: nil)
         return SelectionPoint(x: point.x, y: point.y)
+    }
+
+    private func globalSelectionPoint(for event: NSEvent) -> SelectionPoint {
+        let local = selectionPoint(for: event)
+        guard let geometry else {
+            return local
+        }
+        return SelectionPoint(
+            x: geometry.screenOrigin.x + local.x,
+            y: geometry.screenOrigin.y + local.y
+        )
     }
 
     private func currentRectangle() -> SelectionRectangle? {
@@ -385,7 +762,9 @@ private final class SelectionOverlayView: NSView {
     }
 
     private func localRectangle() -> NSRect? {
-        guard let geometry, let rectangle = currentRectangle() else {
+        guard let geometry,
+              let rectangle = renderedRectangle ?? currentRectangle()
+        else {
             return nil
         }
         return NSRect(
@@ -393,6 +772,32 @@ private final class SelectionOverlayView: NSView {
             y: rectangle.y - geometry.screenOrigin.y,
             width: rectangle.width,
             height: rectangle.height
+        )
+    }
+
+    private func drawStatusMessage(_ message: String, above rectangle: NSRect) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ]
+        let text = message as NSString
+        let textSize = text.size(withAttributes: attributes)
+        let padding = NSSize(width: 10, height: 6)
+        let bubbleSize = NSSize(
+            width: textSize.width + padding.width * 2,
+            height: textSize.height + padding.height * 2
+        )
+        let proposedX = rectangle.midX - bubbleSize.width / 2
+        let x = min(max(bounds.minX + 8, proposedX), bounds.maxX - bubbleSize.width - 8)
+        let proposedY = rectangle.maxY + 8
+        let y = min(proposedY, bounds.maxY - bubbleSize.height - 8)
+        let bubble = NSRect(origin: NSPoint(x: x, y: y), size: bubbleSize)
+        let path = NSBezierPath(roundedRect: bubble, xRadius: 6, yRadius: 6)
+        NSColor.black.withAlphaComponent(0.82).setFill()
+        path.fill()
+        text.draw(
+            at: NSPoint(x: bubble.minX + padding.width, y: bubble.minY + padding.height),
+            withAttributes: attributes
         )
     }
 }
