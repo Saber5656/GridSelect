@@ -78,12 +78,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
                 self.continuation = continuation
                 self.onDrag = onDrag
                 self.sourceContext = sourceContext
-                gridInteraction = sourceContext.flatMap { context in
-                    guard context.caretCandidate != nil || hasGridMouseAnchorResolver else {
-                        return nil
-                    }
-                    return GridOverlayInteraction(sourceContext: context)
-                }
+                gridInteraction = Self.makeGridInteraction(
+                    sourceContext: sourceContext,
+                    hasMouseAnchorResolver: hasGridMouseAnchorResolver
+                )
                 presentPanels(
                     preferredDisplayID: preferredDisplayID(for: sourceContext),
                     sessionGeneration: sessionGeneration
@@ -193,7 +191,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
                 return event.type == .flagsChanged ? event : nil
             }
             if event.type == .flagsChanged {
-                if !event.modifierFlags.contains(.shift) {
+                if Self.isShiftRelease(
+                    keyCode: event.keyCode,
+                    modifierFlags: event.modifierFlags
+                ) {
                     self.freezeGridSelection()
                 }
                 // The approved contract passes the second-Shift release through.
@@ -433,6 +434,26 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         case 126: .up
         default: nil
         }
+    }
+
+    static func makeGridInteraction(
+        sourceContext: ActivationSourceContext?,
+        hasMouseAnchorResolver: Bool
+    ) -> GridOverlayInteraction? {
+        sourceContext.flatMap { context in
+            let interaction = GridOverlayInteraction(sourceContext: context)
+            guard interaction.binder.boundContext != nil || hasMouseAnchorResolver else {
+                return nil
+            }
+            return interaction
+        }
+    }
+
+    static func isShiftRelease(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        (keyCode == 56 || keyCode == 60) && !modifierFlags.contains(.shift)
     }
 
     private func moveGridSelection(_ direction: GridDirection) {
