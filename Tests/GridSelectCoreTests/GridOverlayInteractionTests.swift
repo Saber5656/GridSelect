@@ -237,9 +237,9 @@ final class GridOverlayInteractionTests: XCTestCase {
         }
         XCTAssertEqual(try XCTUnwrap(mouse.currentRectangle).x, 493)
         XCTAssertNotNil(mouse.moveMouseFocus(to: SelectionPoint(x: 900, y: 470)))
+        let clampedRectangle = try XCTUnwrap(mouse.currentRectangle)
         XCTAssertLessThanOrEqual(
-            try XCTUnwrap(mouse.currentRectangle).x
-                + try XCTUnwrap(mouse.currentRectangle).width,
+            clampedRectangle.x + clampedRectangle.width,
             500
         )
     }
