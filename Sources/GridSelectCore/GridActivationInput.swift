@@ -221,15 +221,6 @@ public struct GridActivationInputMachine: Equatable, Sendable {
         return current.commands
     }
 
-    public mutating func completeHandoffAtDeadline(
-        for activation: GridActivation
-    ) -> [GridHandoffCommand]? {
-        guard let current = handoff, current.activation == activation else {
-            return nil
-        }
-        return completeHandoff(for: activation, timestamp: current.deadline)
-    }
-
     public mutating func cancelHandoff(
         for activation: GridActivation,
         reason: GridActivationCancellationReason
