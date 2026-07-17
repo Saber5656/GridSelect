@@ -110,6 +110,24 @@ final class GridSelectionLifecycleTests: XCTestCase {
         XCTAssertEqual(selection.columnRange, 0..<1)
     }
 
+    func testOrderedHandoffStopsAfterCopyStarts() {
+        var lifecycle = adjustingLifecycle(anchor: GridBoundary(row: 0, column: 0))
+
+        let effects = lifecycle.applyHandoffCommands([
+            .move(.right),
+            .freeze,
+            .copyRequested,
+            .cancelRequested,
+        ])
+
+        XCTAssertEqual(effects.count, 3)
+        guard case let .copying(authorization) = lifecycle.state else {
+            return XCTFail("Expected queued commands to stop after copy starts")
+        }
+        XCTAssertEqual(authorization.selection.columnRange, 0..<1)
+        XCTAssertEqual(effects.last, .copyStarted(authorization))
+    }
+
     func testMouseOneColumnAndInclusiveEndpointRowsFreeze() {
         var lifecycle = GridSelectionLifecycle()
         XCTAssertTrue(lifecycle.begin(GridActivation(generation: 1)))

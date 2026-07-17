@@ -378,6 +378,77 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         XCTAssertTrue(clipboard.writtenTexts.isEmpty)
     }
 
+    func testOverlayKeepsCopyOwnershipAndConsumesRepeatsUntilSuccess() async {
+        let overlay = CopyOwningOverlayStub()
+        let extractor = ControlledExtractorStub()
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: ShortcutStub(),
+            permission: PermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: extractor,
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+
+        XCTAssertTrue(coordinator.activate())
+        guard await overlay.waitUntilPresented() else {
+            return XCTFail("Copy-owning overlay did not present")
+        }
+        overlay.pressCopy(rectangle)
+        guard await extractor.waitUntilStarted() else {
+            return XCTFail("Extraction did not start")
+        }
+
+        overlay.pressCopy(rectangle)
+        XCTAssertTrue(overlay.isPresented)
+        XCTAssertEqual(overlay.copyInvocationCount, 1)
+        XCTAssertEqual(overlay.consumedRepeatCount, 1)
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+
+        await extractor.succeed(with: "selected")
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .completed)
+        XCTAssertEqual(clipboard.writtenTexts, ["selected"])
+        XCTAssertFalse(overlay.isPresented)
+        XCTAssertEqual(overlay.dismissalCount, 1)
+    }
+
+    func testEscapeDuringRetainedCopyRejectsLateExtractionResult() async {
+        let overlay = CopyOwningOverlayStub()
+        let extractor = ControlledExtractorStub()
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: ShortcutStub(),
+            permission: PermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: extractor,
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+
+        XCTAssertTrue(coordinator.activate())
+        guard await overlay.waitUntilPresented() else {
+            return XCTFail("Copy-owning overlay did not present")
+        }
+        overlay.pressCopy(rectangle)
+        guard await extractor.waitUntilStarted() else {
+            return XCTFail("Extraction did not start")
+        }
+
+        overlay.pressEscape()
+        await coordinator.waitForMostRecentSession()
+        XCTAssertEqual(coordinator.state, .cancelled)
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+
+        await extractor.succeed(with: "stale result")
+        guard await overlay.waitUntilCopyTaskFinished() else {
+            return XCTFail("Cancelled copy task did not finish")
+        }
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+    }
+
     func testSecureInputEnabledAtCopyAuthorizationPreventsClipboardWrite() async {
         let clipboard = ClipboardStub()
         let coordinator = makeCoordinator(
@@ -711,6 +782,39 @@ final class SelectionModeCoordinatorTests: XCTestCase {
         )
 
         XCTAssertTrue(coordinator.activate())
+        await coordinator.waitForMostRecentSession()
+
+        XCTAssertEqual(coordinator.state, .cancelled)
+        XCTAssertTrue(clipboard.writtenTexts.isEmpty)
+    }
+
+    func testEscapeDuringCopyAuthorizationRejectsLateAuthorization() async {
+        let overlay = CopyOwningOverlayStub()
+        let extractor = ControlledAuthorizationExtractorStub()
+        let clipboard = ClipboardStub()
+        let coordinator = makeCoordinator(
+            shortcut: ShortcutStub(),
+            permission: PermissionStub(status: .granted),
+            overlay: overlay,
+            extractor: extractor,
+            clipboard: clipboard,
+            states: StateRecorder()
+        )
+
+        XCTAssertTrue(coordinator.activate())
+        guard await overlay.waitUntilPresented() else {
+            return XCTFail("Copy-owning overlay did not present")
+        }
+        overlay.pressCopy(rectangle)
+        guard await extractor.waitUntilAuthorizationStarted() else {
+            return XCTFail("Copy authorization did not start")
+        }
+
+        overlay.pressEscape()
+        await extractor.succeedAuthorization()
+        guard await overlay.waitUntilCopyTaskFinished() else {
+            return XCTFail("Cancelled authorization task did not finish")
+        }
         await coordinator.waitForMostRecentSession()
 
         XCTAssertEqual(coordinator.state, .cancelled)
@@ -1224,6 +1328,23 @@ private final class ImmediateOverlayStub: SelectionOverlayPresenting {
     }
 
     func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: @escaping @MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult {
+        guard onReady() != nil else {
+            return .cancelled
+        }
+        return await resolveTestCopy(
+            try await select(onDrag: onDrag),
+            onCopyRequested: onCopyRequested
+        )
+    }
+
+    func select(
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult {
         selectionCount += 1
@@ -1247,9 +1368,141 @@ private final class ImmediateOverlayStub: SelectionOverlayPresenting {
 }
 
 @MainActor
+private final class CopyOwningOverlayStub: SelectionOverlayPresenting {
+    private var continuation: CheckedContinuation<SelectionOverlayResult, any Error>?
+    private var copyHandler: (@MainActor @Sendable (
+        SelectionCopyRequest
+    ) async -> SelectionCopyResult)?
+    private var copyTask: Task<Void, Never>?
+    private var presentationWaiters: [XCTestExpectation] = []
+    private var copyCompletionWaiters: [XCTestExpectation] = []
+    private(set) var copyInvocationCount = 0
+    private(set) var consumedRepeatCount = 0
+    private(set) var dismissalCount = 0
+
+    var isPresented: Bool {
+        continuation != nil
+    }
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: @escaping @MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult {
+        guard onReady() != nil else {
+            return .cancelled
+        }
+        copyHandler = onCopyRequested
+        presentationWaiters.forEach { $0.fulfill() }
+        presentationWaiters.removeAll()
+        return try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func select(
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        .cancelled
+    }
+
+    func dismissSelection() {
+        dismissalCount += 1
+        copyTask?.cancel()
+        copyHandler = nil
+        resolve(.cancelled)
+    }
+
+    func pressCopy(_ rectangle: SelectionRectangle) {
+        guard copyTask == nil else {
+            consumedRepeatCount += 1
+            return
+        }
+        guard let copyHandler else {
+            return
+        }
+        copyInvocationCount += 1
+        copyTask = Task { @MainActor [weak self] in
+            let result = await copyHandler(.unbound(rectangle))
+            guard let self else {
+                return
+            }
+            defer {
+                self.copyTask = nil
+                self.copyCompletionWaiters.forEach { $0.fulfill() }
+                self.copyCompletionWaiters.removeAll()
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            self.resolve(.copyFinished(result))
+        }
+    }
+
+    func pressEscape() {
+        copyTask?.cancel()
+        resolve(.cancelled)
+    }
+
+    func waitUntilPresented(timeout: TimeInterval = 2) async -> Bool {
+        guard !isPresented else {
+            return true
+        }
+        let expectation = XCTestExpectation(description: "Overlay presents")
+        presentationWaiters.append(expectation)
+        let result = await XCTWaiter().fulfillment(
+            of: [expectation],
+            timeout: timeout
+        )
+        presentationWaiters.removeAll { $0 === expectation }
+        return result == .completed
+    }
+
+    func waitUntilCopyTaskFinished(timeout: TimeInterval = 2) async -> Bool {
+        guard copyTask != nil else {
+            return true
+        }
+        let expectation = XCTestExpectation(description: "Copy task finishes")
+        copyCompletionWaiters.append(expectation)
+        let result = await XCTWaiter().fulfillment(
+            of: [expectation],
+            timeout: timeout
+        )
+        copyCompletionWaiters.removeAll { $0 === expectation }
+        return result == .completed
+    }
+
+    private func resolve(_ result: SelectionOverlayResult) {
+        guard let continuation else {
+            return
+        }
+        self.continuation = nil
+        continuation.resume(returning: result)
+    }
+}
+
+@MainActor
 private final class HandoffCapturingOverlayStub: SelectionOverlayPresenting {
     private(set) var handoffCommands: [GridHandoffCommand]?
     private(set) var sourceContext: ActivationSourceContext?
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: @escaping @MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult {
+        try await select(
+            sourceContext: sourceContext,
+            onReady: onReady,
+            onDrag: onDrag
+        )
+    }
 
     func select(
         sourceContext: ActivationSourceContext?,
@@ -1272,6 +1525,17 @@ private final class HandoffCapturingOverlayStub: SelectionOverlayPresenting {
 
 @MainActor
 private final class PreReadyFailingOverlayStub: SelectionOverlayPresenting {
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: @escaping @MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult {
+        throw TestFailure.expected
+    }
+
     func select(
         sourceContext: ActivationSourceContext?,
         onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
@@ -1303,6 +1567,20 @@ private final class SuspendingOverlayStub: SelectionOverlayPresenting {
     private var selectionWaiters: [SelectionWaiter] = []
     private(set) var selectionCount = 0
     private(set) var dismissalCount = 0
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: @escaping @MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult {
+        guard onReady() != nil else {
+            return .cancelled
+        }
+        return try await select(onDrag: onDrag)
+    }
 
     func select(
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
@@ -1361,6 +1639,39 @@ private final class SuspendingOverlayStub: SelectionOverlayPresenting {
             }
         }
         selectionWaiters = pending
+    }
+}
+
+@MainActor
+private func resolveTestCopy(
+    _ result: SelectionOverlayResult,
+    onCopyRequested: @escaping @MainActor @Sendable (
+        SelectionCopyRequest
+    ) async -> SelectionCopyResult
+) async -> SelectionOverlayResult {
+    switch result {
+    case let .confirmed(rectangle):
+        return .copyFinished(await onCopyRequested(.unbound(rectangle)))
+    case let .boundConfirmed(rectangle, context):
+        let selection = GridIndexSelection(
+            anchor: GridBoundary(row: 0, column: 0),
+            focus: GridBoundary(row: 0, column: 1)
+        )
+        return .copyFinished(
+            await onCopyRequested(
+                .bound(
+                    rectangle,
+                    context,
+                    GridCopyAuthorization(
+                        activation: context.activation,
+                        sequence: 1,
+                        selection: selection
+                    )
+                )
+            )
+        )
+    case .copyFinished, .cancelled, .sourceFailed:
+        return result
     }
 }
 
@@ -1450,6 +1761,55 @@ private actor ControlledExtractorStub: RectangularTextExtracting {
         )
         startedExpectations.removeAll { $0 === expectation }
         return result == .completed
+    }
+}
+
+private actor ControlledAuthorizationExtractorStub: RectangularTextExtracting {
+    private var startedExpectations: [XCTestExpectation] = []
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var authorizationStarted = false
+    private var authorizationShouldSucceed = false
+
+    func extractText(in rectangle: SelectionRectangle) async throws -> String {
+        "selected"
+    }
+
+    func validateCopyAuthorization(
+        for boundContext: BoundSelectionContext?
+    ) async throws {
+        authorizationStarted = true
+        startedExpectations.forEach { $0.fulfill() }
+        startedExpectations.removeAll()
+        if authorizationShouldSucceed {
+            authorizationShouldSucceed = false
+            return
+        }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilAuthorizationStarted(timeout: TimeInterval = 2) async -> Bool {
+        guard !authorizationStarted else {
+            return true
+        }
+        let expectation = XCTestExpectation(description: "Copy authorization starts")
+        startedExpectations.append(expectation)
+        let result = await XCTWaiter().fulfillment(
+            of: [expectation],
+            timeout: timeout
+        )
+        startedExpectations.removeAll { $0 === expectation }
+        return result == .completed
+    }
+
+    func succeedAuthorization() {
+        guard let pendingContinuation = continuation else {
+            authorizationShouldSucceed = true
+            return
+        }
+        pendingContinuation.resume()
+        continuation = nil
     }
 }
 

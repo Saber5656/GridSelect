@@ -236,7 +236,7 @@ public struct GridSelectionLifecycle: Equatable, Sendable {
             if let effect {
                 effects.append(effect)
             }
-            if !isActive {
+            if effect?.startsCopy == true || !isActive {
                 break
             }
         }
@@ -266,5 +266,14 @@ public struct GridSelectionLifecycle: Equatable, Sendable {
         case .inactive:
             return nil
         }
+    }
+}
+
+private extension GridSelectionLifecycleEffect {
+    var startsCopy: Bool {
+        if case .copyStarted = self {
+            return true
+        }
+        return false
     }
 }

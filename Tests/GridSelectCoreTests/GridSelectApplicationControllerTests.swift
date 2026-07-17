@@ -442,6 +442,44 @@ private final class ApplicationOverlayStub: SelectionOverlayPresenting {
     }
 
     func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: @escaping @MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult {
+        guard onReady() != nil else {
+            return .cancelled
+        }
+        let overlayResult = try await select(onDrag: onDrag)
+        switch overlayResult {
+        case let .confirmed(rectangle):
+            return .copyFinished(await onCopyRequested(.unbound(rectangle)))
+        case let .boundConfirmed(rectangle, context):
+            let selection = GridIndexSelection(
+                anchor: GridBoundary(row: 0, column: 0),
+                focus: GridBoundary(row: 0, column: 1)
+            )
+            return .copyFinished(
+                await onCopyRequested(
+                    .bound(
+                        rectangle,
+                        context,
+                        GridCopyAuthorization(
+                            activation: context.activation,
+                            sequence: 1,
+                            selection: selection
+                        )
+                    )
+                )
+            )
+        case .copyFinished, .cancelled, .sourceFailed:
+            return overlayResult
+        }
+    }
+
+    func select(
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult {
         selectionCount += 1

@@ -6,8 +6,25 @@ public enum SelectionPermissionStatus: Equatable, Sendable {
 public enum SelectionOverlayResult: Equatable, Sendable {
     case confirmed(SelectionRectangle)
     case boundConfirmed(SelectionRectangle, BoundSelectionContext)
+    case copyFinished(SelectionCopyResult)
     case cancelled
     case sourceFailed(SelectionSourceFailure)
+}
+
+public enum SelectionCopyRequest: Equatable, Sendable {
+    case unbound(SelectionRectangle)
+    case bound(
+        SelectionRectangle,
+        BoundSelectionContext,
+        GridCopyAuthorization
+    )
+}
+
+public enum SelectionCopyResult: Equatable, Sendable {
+    case completed
+    case cancelled
+    case permissionRequired
+    case failed(SelectionModeFailure)
 }
 
 public enum SelectionSourceFailure: Equatable, Sendable {
@@ -106,6 +123,15 @@ public protocol SelectionOverlayPresenting: AnyObject {
     func select(
         sourceContext: ActivationSourceContext?,
         onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void,
+        onCopyRequested: @escaping @MainActor @Sendable (
+            SelectionCopyRequest
+        ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult
 
@@ -192,6 +218,7 @@ public final class SelectionModeCoordinator {
     private var shortcutGeneration = 0
     private var nextSessionID = 0
     private var activeSessionID: Int?
+    private var activeCopySessionID: Int?
     private var activeSourceContext: ActivationSourceContext?
     private var activeHandoffRequired = false
     private var sessionTasks: [Int: Task<Void, Never>] = [:]
@@ -297,6 +324,9 @@ public final class SelectionModeCoordinator {
         }
 
         activeSessionID = nil
+        if activeCopySessionID == sessionID {
+            activeCopySessionID = nil
+        }
         clearActiveSourceContext()
         activeHandoffRequired = false
         sessionTasks[sessionID]?.cancel()
@@ -314,6 +344,7 @@ public final class SelectionModeCoordinator {
 
     public func shutdown() {
         activeSessionID = nil
+        activeCopySessionID = nil
         clearActiveSourceContext()
         activeHandoffRequired = false
         sessionTasks.values.forEach { $0.cancel() }
@@ -374,6 +405,15 @@ public final class SelectionModeCoordinator {
                 },
                 onDrag: { [weak self] rectangle in
                     self?.handleDrag(rectangle, sessionID: sessionID)
+                },
+                onCopyRequested: { [weak self] request in
+                    guard let self else {
+                        return .cancelled
+                    }
+                    return await self.processCopyRequest(
+                        request,
+                        sessionID: sessionID
+                    )
                 }
             )
         } catch is CancellationError {
@@ -390,32 +430,58 @@ public final class SelectionModeCoordinator {
             return
         }
 
-        overlay.dismissSelection()
         switch overlayResult {
         case .cancelled:
+            overlay.dismissSelection()
             finish(with: .cancelled, sessionID: sessionID)
         case let .sourceFailed(failure):
+            overlay.dismissSelection()
             finish(with: state(for: failure), sessionID: sessionID)
-        case let .confirmed(rectangle):
-            guard activeSourceContext == nil else {
-                // The production Double-Shift path must never fall back to
-                // copy-time hit testing. Issue #14 supplies bound extraction.
-                finish(with: .failed(.extractionFailed), sessionID: sessionID)
-                return
+        case let .copyFinished(result):
+            overlay.dismissSelection()
+            finish(with: state(for: result), sessionID: sessionID)
+        case .confirmed, .boundConfirmed:
+            // The callback-aware protocol converts copy requests into a
+            // terminal result before returning to the coordinator.
+            overlay.dismissSelection()
+            finish(with: .failed(.overlayFailed), sessionID: sessionID)
+        }
+    }
+
+    private func processCopyRequest(
+        _ request: SelectionCopyRequest,
+        sessionID: Int
+    ) async -> SelectionCopyResult {
+        guard isCurrent(sessionID), activeCopySessionID == nil else {
+            return .cancelled
+        }
+        activeCopySessionID = sessionID
+        defer {
+            if activeCopySessionID == sessionID {
+                activeCopySessionID = nil
             }
-            await processConfirmedSelection(rectangle, sessionID: sessionID)
-        case let .boundConfirmed(rectangle, boundContext):
+        }
+        switch request {
+        case let .unbound(rectangle):
+            guard activeSourceContext == nil else {
+                return .failed(.extractionFailed)
+            }
+            return await processConfirmedSelection(
+                rectangle,
+                sessionID: sessionID
+            )
+        case let .bound(rectangle, boundContext, authorization):
             guard let activeSourceContext,
+                  authorization.activation == boundContext.activation,
                   boundContext.activation == activeSourceContext.activation,
                   let sessionIdentity = boundContext.sessionIdentity,
                   sessionIdentity == activeSourceContext.sessionIdentity,
                   boundContext.source == activeSourceContext.source,
                   boundContext.sourceWindowFrame == activeSourceContext.sourceWindowFrame
             else {
-                finish(with: .failed(.extractionFailed), sessionID: sessionID)
-                return
+                return .failed(.extractionFailed)
             }
-            await processConfirmedSelection(
+            return await processConfirmedSelection(
                 rectangle,
                 boundContext: boundContext,
                 sessionID: sessionID
@@ -427,20 +493,19 @@ public final class SelectionModeCoordinator {
         _ rectangle: SelectionRectangle,
         boundContext: BoundSelectionContext? = nil,
         sessionID: Int
-    ) async {
+    ) async -> SelectionCopyResult {
         guard !rectangle.isEmpty else {
-            finish(with: .cancelled, sessionID: sessionID)
-            return
+            return .cancelled
         }
 
         transition(to: .confirmed(rectangle), for: sessionID)
         guard isCurrent(sessionID), !Task.isCancelled else {
-            return
+            return .cancelled
         }
 
         transition(to: .extracting(rectangle), for: sessionID)
         guard isCurrent(sessionID), !Task.isCancelled else {
-            return
+            return .cancelled
         }
 
         let text: String
@@ -454,76 +519,63 @@ public final class SelectionModeCoordinator {
                 text = try await extractor.extractText(in: rectangle)
             }
         } catch is CancellationError {
-            finish(with: .cancelled, sessionID: sessionID)
-            return
+            return .cancelled
         } catch is SelectionPermissionRequiredError {
-            finish(with: .permissionRequired, sessionID: sessionID)
-            return
+            return .permissionRequired
         } catch let error as SelectionSourceFailureError {
-            finish(with: state(for: error.failure), sessionID: sessionID)
-            return
+            return result(for: error.failure)
         } catch {
-            finish(with: .failed(.extractionFailed), sessionID: sessionID)
-            return
+            return .failed(.extractionFailed)
         }
 
         guard isCurrent(sessionID), !Task.isCancelled else {
-            return
+            return .cancelled
         }
 
         guard permissionChecker.selectionPermissionStatus == .granted else {
-            finish(with: .permissionRequired, sessionID: sessionID)
-            return
+            return .permissionRequired
         }
 
         guard case let .plainText(clipboardText) = clipboardFormatter.formatExtractedText(text) else {
-            finish(with: .cancelled, sessionID: sessionID)
-            return
+            return .cancelled
         }
 
         transition(to: .copying, for: sessionID)
         guard isCurrent(sessionID), !Task.isCancelled else {
-            return
+            return .cancelled
         }
 
         guard permissionChecker.selectionPermissionStatus == .granted else {
-            finish(with: .permissionRequired, sessionID: sessionID)
-            return
+            return .permissionRequired
         }
 
         do {
             try await extractor.validateCopyAuthorization(for: boundContext)
         } catch is CancellationError {
-            finish(with: .cancelled, sessionID: sessionID)
-            return
+            return .cancelled
         } catch is SelectionPermissionRequiredError {
-            finish(with: .permissionRequired, sessionID: sessionID)
-            return
+            return .permissionRequired
         } catch let error as SelectionSourceFailureError {
-            finish(with: state(for: error.failure), sessionID: sessionID)
-            return
+            return result(for: error.failure)
         } catch {
-            finish(with: .failed(.extractionFailed), sessionID: sessionID)
-            return
+            return .failed(.extractionFailed)
         }
 
         guard isCurrent(sessionID), !Task.isCancelled else {
-            return
+            return .cancelled
         }
 
         guard permissionChecker.selectionPermissionStatus == .granted else {
-            finish(with: .permissionRequired, sessionID: sessionID)
-            return
+            return .permissionRequired
         }
 
         do {
             try clipboard.writePlainText(clipboardText)
         } catch {
-            finish(with: .failed(.clipboardWriteFailed), sessionID: sessionID)
-            return
+            return .failed(.clipboardWriteFailed)
         }
 
-        finish(with: .completed, sessionID: sessionID)
+        return .completed
     }
 
     private func isCurrent(_ sessionID: Int) -> Bool {
@@ -627,6 +679,31 @@ public final class SelectionModeCoordinator {
         }
     }
 
+    private func result(for failure: SelectionSourceFailure) -> SelectionCopyResult {
+        switch state(for: failure) {
+        case .permissionRequired:
+            return .permissionRequired
+        case let .failed(failure):
+            return .failed(failure)
+        case .idle, .selecting, .dragging, .confirmed, .extracting, .copying,
+             .completed, .cancelled:
+            return .failed(.extractionFailed)
+        }
+    }
+
+    private func state(for result: SelectionCopyResult) -> SelectionModeState {
+        switch result {
+        case .completed:
+            return .completed
+        case .cancelled:
+            return .cancelled
+        case .permissionRequired:
+            return .permissionRequired
+        case let .failed(failure):
+            return .failed(failure)
+        }
+    }
+
     private func dismissOverlay(for sessionID: Int) {
         guard isCurrent(sessionID) else {
             return
@@ -644,6 +721,9 @@ public final class SelectionModeCoordinator {
         }
 
         activeSessionID = nil
+        if activeCopySessionID == sessionID {
+            activeCopySessionID = nil
+        }
         clearActiveSourceContext()
         activeHandoffRequired = false
         transition(to: finalState)

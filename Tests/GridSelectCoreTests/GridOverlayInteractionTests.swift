@@ -46,13 +46,16 @@ final class GridOverlayInteractionTests: XCTestCase {
         )
         XCTAssertNotNil(interaction.freeze())
 
-        guard case let .copyRequested(rectangle, bound) = interaction.requestCopy() else {
+        guard case let .copyRequested(rectangle, bound, authorization) =
+            interaction.requestCopy()
+        else {
             return XCTFail("Expected bound copy request")
         }
         XCTAssertEqual(rectangle.width, 10)
         XCTAssertEqual(rectangle.height, 60)
         XCTAssertEqual(bound.source, candidate.source)
         XCTAssertEqual(bound.element, candidate.element)
+        XCTAssertEqual(authorization.selection.columnRange.count, 1)
     }
 
     func testMouseBindingRejectsAnotherSource() {
@@ -142,16 +145,63 @@ final class GridOverlayInteractionTests: XCTestCase {
         _ = interaction.moveKeyboardFocus(.right)
         _ = interaction.freeze()
 
-        guard case let .copyRequested(rectangle, bound) = interaction.requestCopy() else {
+        guard case let .copyRequested(rectangle, bound, authorization) =
+            interaction.requestCopy()
+        else {
             return XCTFail("Expected keyboard copy")
         }
         XCTAssertEqual(rectangle.width, 10)
         XCTAssertEqual(bound.activation, sourceContext.activation)
         XCTAssertEqual(bound.source, sourceContext.source)
         XCTAssertEqual(bound.element, sourceContext.caretCandidate?.element)
+        XCTAssertEqual(authorization.activation, sourceContext.activation)
     }
 
-    func testCancelAndCopyHandoffStopLaterCommands() {
+    func testCopyCompletionRequiresExactLifecycleAuthorization() {
+        var interaction = GridOverlayInteraction(sourceContext: context(withCaret: true))
+        _ = interaction.moveKeyboardFocus(.right)
+        _ = interaction.freeze()
+        guard case let .copyRequested(_, _, authorization) = interaction.requestCopy() else {
+            return XCTFail("Expected copy authorization")
+        }
+        let stale = GridCopyAuthorization(
+            activation: authorization.activation,
+            sequence: authorization.sequence + 1,
+            selection: authorization.selection
+        )
+
+        XCTAssertFalse(interaction.finishCopy(stale, succeeded: true))
+        XCTAssertEqual(interaction.lifecycle.state, .copying(authorization))
+        XCTAssertTrue(interaction.finishCopy(authorization, succeeded: true))
+        XCTAssertEqual(
+            interaction.lifecycle.state,
+            .completed(authorization.activation)
+        )
+    }
+
+    func testCopyCancellationRequiresExactLifecycleAuthorization() {
+        var interaction = GridOverlayInteraction(sourceContext: context(withCaret: true))
+        _ = interaction.moveKeyboardFocus(.right)
+        _ = interaction.freeze()
+        guard case let .copyRequested(_, _, authorization) = interaction.requestCopy() else {
+            return XCTFail("Expected copy authorization")
+        }
+        let stale = GridCopyAuthorization(
+            activation: authorization.activation,
+            sequence: authorization.sequence + 1,
+            selection: authorization.selection
+        )
+
+        XCTAssertFalse(interaction.cancelCopy(stale))
+        XCTAssertEqual(interaction.lifecycle.state, .copying(authorization))
+        XCTAssertTrue(interaction.cancelCopy(authorization))
+        XCTAssertEqual(
+            interaction.lifecycle.state,
+            .cancelled(authorization.activation)
+        )
+    }
+
+    func testCancelStopsHandoffAndCopyThenCancelProcessesInOrder() {
         var cancelled = GridOverlayInteraction(sourceContext: context(withCaret: true))
         XCTAssertEqual(
             cancelled.applyHandoffCommands([
@@ -162,17 +212,25 @@ final class GridOverlayInteractionTests: XCTestCase {
         )
         XCTAssertNil(cancelled.currentRectangle)
 
-        var copied = GridOverlayInteraction(sourceContext: context(withCaret: true))
+        let copiedContext = context(withCaret: true)
+        var copied = GridOverlayInteraction(sourceContext: copiedContext)
         let effects = copied.applyHandoffCommands([
             .move(.right),
             .freeze,
             .copyRequested,
             .cancelRequested,
         ])
-        XCTAssertEqual(effects.count, 3)
-        guard let last = effects.last, case .copyRequested = last else {
-            return XCTFail("Expected copy to stop replay")
+        guard effects.count == 4 else {
+            return XCTFail("Expected move, freeze, copy, and cancel effects")
         }
+        guard case .copyRequested = effects[2] else {
+            return XCTFail("Expected copy request before cancellation")
+        }
+        XCTAssertEqual(effects[3], .cancelled)
+        XCTAssertEqual(
+            copied.lifecycle.state,
+            .cancelled(copiedContext.activation)
+        )
     }
 
     func testKeyboardCrossingAndLastRowRepeatRemainBounded() throws {
