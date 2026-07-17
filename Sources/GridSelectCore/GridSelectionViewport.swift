@@ -44,6 +44,22 @@ public struct GridSelectionViewport: Equatable, Sendable {
             && visualRowCount > 0
     }
 
+    /// Returns the last grid boundary whose x-coordinate remains inside `frame`.
+    public func maximumColumn(within frame: ScreenRectangle) -> Int? {
+        guard isUsable, frame.maxX.isFinite else {
+            return nil
+        }
+        let horizontalSpan = frame.maxX - originX
+        guard horizontalSpan >= 0 else {
+            return nil
+        }
+        let column = (horizontalSpan / characterWidth).rounded(.down)
+        guard column.isFinite, column < Double(Int.max) else {
+            return nil
+        }
+        return Int(column)
+    }
+
     public func boundary(
         at point: SelectionPoint,
         role: GridPointerBoundaryRole

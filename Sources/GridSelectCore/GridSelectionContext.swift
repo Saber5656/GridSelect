@@ -249,7 +249,9 @@ public struct GridSelectionContextBinder: Equatable, Sendable {
         if let viewport {
             guard viewport.isUsable,
                   viewport.displayID == displayID,
-                  anchor.row < viewport.visualRowCount
+                  anchor.row < viewport.visualRowCount,
+                  let maximumColumn = viewport.maximumColumn(within: display.appKitFrame),
+                  anchor.column <= maximumColumn
             else {
                 return .rejected(.invalidViewport)
             }

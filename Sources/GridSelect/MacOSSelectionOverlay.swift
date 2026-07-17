@@ -60,6 +60,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     private let minimumSelectionSize: Double
     private let panelLevel: NSWindow.Level
     private let mouseAnchorResolver: any MacOSGridMouseAnchorResolving
+    private let hasGridMouseAnchorResolver: Bool
 
     private var panels: [SelectionOverlayPanel] = []
     private var localKeyMonitor: Any?
@@ -87,6 +88,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
     ) {
         self.minimumSelectionSize = minimumSelectionSize
         self.panelLevel = panelLevel
+        hasGridMouseAnchorResolver = mouseAnchorResolver != nil
         self.mouseAnchorResolver = mouseAnchorResolver
             ?? UnavailableGridMouseAnchorResolver()
     }
@@ -148,7 +150,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
                 self.onDrag = onDrag
                 self.onCopyRequested = onCopyRequested
                 self.sourceContext = sourceContext
-                gridInteraction = sourceContext.map(GridOverlayInteraction.init)
+                gridInteraction = Self.makeGridInteraction(
+                    sourceContext: sourceContext,
+                    hasMouseAnchorResolver: hasGridMouseAnchorResolver
+                )
                 presentPanels(
                     preferredDisplayID: preferredDisplayID(for: sourceContext),
                     sessionGeneration: sessionGeneration
@@ -263,7 +268,10 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
                 return event.type == .flagsChanged ? event : nil
             }
             if event.type == .flagsChanged {
-                if !event.modifierFlags.contains(.shift) {
+                if Self.isShiftRelease(
+                    keyCode: event.keyCode,
+                    modifierFlags: event.modifierFlags
+                ) {
                     self.freezeGridSelection()
                 }
                 // The approved contract passes the second-Shift release through.
@@ -382,7 +390,7 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         )
         let view = SelectionOverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
         view.geometry = geometry
-        view.usesGridInteraction = sourceContext != nil
+        view.usesGridInteraction = gridInteraction != nil
         view.onDrag = { [weak self] rectangle in
             guard self?.sessionGuard.isCurrent(sessionGeneration) == true else {
                 return
@@ -521,6 +529,26 @@ final class MacOSSelectionOverlay: SelectionOverlayPresenting {
         case 126: .up
         default: nil
         }
+    }
+
+    static func makeGridInteraction(
+        sourceContext: ActivationSourceContext?,
+        hasMouseAnchorResolver: Bool
+    ) -> GridOverlayInteraction? {
+        sourceContext.flatMap { context in
+            let interaction = GridOverlayInteraction(sourceContext: context)
+            guard interaction.binder.boundContext != nil || hasMouseAnchorResolver else {
+                return nil
+            }
+            return interaction
+        }
+    }
+
+    static func isShiftRelease(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        (keyCode == 56 || keyCode == 60) && !modifierFlags.contains(.shift)
     }
 
     private func moveGridSelection(_ direction: GridDirection) {
