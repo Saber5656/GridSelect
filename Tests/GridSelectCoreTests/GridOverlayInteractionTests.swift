@@ -253,6 +253,65 @@ final class GridOverlayInteractionTests: XCTestCase {
         XCTAssertLessThanOrEqual(rectangle.x + rectangle.width, 500)
     }
 
+    func testNonAlignedViewportCapsKeyboardAndMouseAtLastVisibleBoundary() throws {
+        let viewport = GridSelectionViewport(
+            displayID: 1,
+            originX: 103,
+            topY: 500,
+            characterWidth: 10,
+            lineHeight: 20,
+            visualRowCount: 5
+        )
+        let source = SelectionSourceIdentity(processIdentifier: 42, windowIdentifier: 7)
+        let context = ActivationSourceContext(
+            activation: GridActivation(generation: 1),
+            source: source,
+            sourceWindowFrame: ScreenRectangle(x: 0, y: 0, width: 500, height: 500),
+            displays: [display()],
+            caretCandidate: GridCaretCandidate(
+                element: SelectionElementIdentity(rawValue: 3),
+                anchor: GridBoundary(row: 1, column: 38),
+                sourceRange: 4..<4,
+                displayID: 1,
+                viewport: viewport
+            )
+        )
+        var keyboard = GridOverlayInteraction(sourceContext: context)
+        XCTAssertNotNil(keyboard.moveKeyboardFocus(.right))
+        XCTAssertNil(keyboard.moveKeyboardFocus(.right))
+        XCTAssertEqual(try XCTUnwrap(keyboard.currentRectangle).x, 483)
+        XCTAssertEqual(try XCTUnwrap(keyboard.currentRectangle).width, 10)
+
+        var mouse = GridOverlayInteraction(
+            sourceContext: ActivationSourceContext(
+                activation: context.activation,
+                source: source,
+                sourceWindowFrame: context.sourceWindowFrame,
+                displays: context.displays,
+                caretCandidate: nil
+            )
+        )
+        let candidate = GridMouseAnchorCandidate(
+            source: source,
+            element: SelectionElementIdentity(rawValue: 3),
+            sourceRange: 4..<4,
+            viewport: viewport
+        )
+        guard case .accepted = mouse.beginMouseSelection(
+            candidate: candidate,
+            at: SelectionPoint(x: 500, y: 470)
+        ) else {
+            return XCTFail("Expected right-edge pointer to clamp and bind")
+        }
+        XCTAssertEqual(try XCTUnwrap(mouse.currentRectangle).x, 493)
+        XCTAssertNotNil(mouse.moveMouseFocus(to: SelectionPoint(x: 900, y: 470)))
+        let clampedRectangle = try XCTUnwrap(mouse.currentRectangle)
+        XCTAssertLessThanOrEqual(
+            clampedRectangle.x + clampedRectangle.width,
+            500
+        )
+    }
+
     func testMouseViewportMismatchRejectsWithoutBinding() {
         var interaction = GridOverlayInteraction(sourceContext: context(withCaret: false))
         let mismatchedViewport = GridSelectionViewport(

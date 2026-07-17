@@ -264,6 +264,33 @@ final class GridSelectApplicationControllerTests: XCTestCase {
         )
     }
 
+    func testInputMonitoringRegistrationFailureIsSurfacedWithRecoveryGuidance() {
+        let shortcut = ApplicationShortcutStub()
+        shortcut.registrationError = MacOSGlobalShortcutError.inputMonitoringRequired
+        let controller = GridSelectApplicationController(
+            shortcut: shortcut,
+            permissionChecker: ApplicationPermissionStub(status: .granted),
+            overlay: ApplicationOverlayStub(result: .cancelled),
+            extractor: ApplicationExtractorStub(text: "unused"),
+            clipboard: ApplicationClipboardStub()
+        )
+
+        XCTAssertFalse(controller.start())
+        XCTAssertEqual(
+            controller.statusModel.snapshot.shortcutStatus,
+            .inputMonitoringRequired(displayName: "Double-Shift")
+        )
+        XCTAssertTrue(controller.statusModel.snapshot.statusDetail.contains("Input Monitoring"))
+        XCTAssertTrue(controller.statusModel.snapshot.statusDetail.contains("Recheck Permissions"))
+
+        shortcut.registrationError = nil
+        XCTAssertTrue(controller.start())
+        XCTAssertEqual(
+            controller.statusModel.snapshot.shortcutStatus,
+            .active(displayName: "Double-Shift")
+        )
+    }
+
     func testCancelStopsPendingManualCaptureBeforeOverlayStarts() async {
         let overlay = ApplicationOverlayStub(result: .cancelled)
         let controller = GridSelectApplicationController(
@@ -341,12 +368,14 @@ private enum ApplicationTestError: Error {
 @MainActor
 private final class ApplicationShortcutStub: SelectionShortcutRegistering {
     var shouldFail = false
+    var registrationError: (any Error)?
     private var handler: (@MainActor @Sendable (SelectionShortcutEvent) -> Void)?
     private var nextGeneration: UInt64 = 0
 
     func registerEventHandler(
         _ handler: @escaping @MainActor @Sendable (SelectionShortcutEvent) -> Void
     ) throws {
+        if let registrationError { throw registrationError }
         if shouldFail { throw ApplicationTestError.expected }
         self.handler = handler
     }
