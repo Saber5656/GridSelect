@@ -2,8 +2,23 @@
 import XCTest
 
 final class GridSelectStatusSnapshotTests: XCTestCase {
+    func testMissingInputMonitoringIsIndependentAndActionable() {
+        let snapshot = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .required,
+            permissionStatus: .granted,
+            shortcutStatus: .inactive(displayName: "Double-Shift"),
+            selectionState: .idle
+        )
+
+        XCTAssertFalse(snapshot.isReady)
+        XCTAssertEqual(snapshot.statusTitle, "Input Monitoring required")
+        XCTAssertTrue(snapshot.statusDetail.contains("Privacy & Security > Input Monitoring"))
+        XCTAssertTrue(snapshot.statusDetail.contains("recheck"))
+    }
+
     func testMissingPermissionTakesPriorityOverInactiveShortcut() {
         let snapshot = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .required,
             shortcutStatus: .inactive(displayName: "⌘⇧G"),
             selectionState: .idle
@@ -13,12 +28,13 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.statusTitle, "Accessibility required")
         XCTAssertEqual(
             snapshot.statusDetail,
-            "Open System Settings, then go to Privacy & Security > Accessibility and enable GridSelect."
+            "Open System Settings, then go to Privacy & Security > Accessibility and enable GridSelect, then recheck."
         )
     }
 
     func testGrantedPermissionAndActiveShortcutAreReady() {
         let snapshot = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .granted,
             shortcutStatus: .active(displayName: "⌘⇧G"),
             selectionState: .idle
@@ -50,6 +66,7 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
         for selectionState in activeStates {
             let snapshot = GridSelectStatusSnapshot(
+                inputMonitoringStatus: .granted,
                 permissionStatus: .granted,
                 shortcutStatus: .active(displayName: "⌘⇧G"),
                 selectionState: selectionState
@@ -59,8 +76,36 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
         }
     }
 
+    func testSelectionLifecycleStatesHaveDistinctUserFacingStatus() {
+        let base = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
+            permissionStatus: .granted,
+            shortcutStatus: .active(displayName: "Double-Shift"),
+            selectionState: .idle
+        )
+
+        XCTAssertEqual(base.updating(selectionState: .selecting).statusTitle, "Grid mode armed")
+        XCTAssertEqual(
+            base.updating(
+                selectionState: .dragging(
+                    SelectionRectangle(displayID: 1, x: 0, y: 0, width: 10, height: 20)
+                )
+            ).statusTitle,
+            "Adjusting selection"
+        )
+        XCTAssertEqual(
+            base.updating(
+                selectionState: .confirmed(
+                    SelectionRectangle(displayID: 1, x: 0, y: 0, width: 10, height: 20)
+                )
+            ).statusTitle,
+            "Selection frozen"
+        )
+    }
+
     func testInactiveShortcutIsNotPresentedAsReady() {
         let snapshot = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .granted,
             shortcutStatus: .inactive(displayName: "⌘⇧G"),
             selectionState: .idle
@@ -74,11 +119,13 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
     func testSelectionOutcomeOverridesReadinessSummary() {
         let ready = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .granted,
             shortcutStatus: .active(displayName: "⌘⇧G"),
             selectionState: .completed
         )
         let copyFailure = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .granted,
             shortcutStatus: .active(displayName: "⌘⇧G"),
             selectionState: .failed(.clipboardWriteFailed)
@@ -96,6 +143,7 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
     func testCopyingStatusExplainsPlainTextProgressAndCancellation() {
         let snapshot = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .granted,
             shortcutStatus: .active(displayName: "Double-Shift"),
             selectionState: .copying
@@ -108,6 +156,7 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
     func testShortcutRegistrationFailureHasRecoveryCopy() {
         let snapshot = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .granted,
             shortcutStatus: .registrationFailed(displayName: "⌘⇧G"),
             selectionState: .idle
@@ -119,6 +168,7 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
     func testStatusCanBeUpdatedFromRuntimeAdaptersWithoutRebuildingUnrelatedState() {
         let initial = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .required,
             shortcutStatus: .inactive(displayName: "⌘⇧G"),
             selectionState: .idle
@@ -139,6 +189,7 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
     func testGrantingPermissionClearsStalePermissionRequiredState() {
         let permissionRequired = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .required,
             shortcutStatus: .active(displayName: "⌘⇧G"),
             selectionState: .permissionRequired
@@ -154,6 +205,7 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
     func testUnrelatedUpdatePreservesPermissionRequiredState() {
         let permissionRequired = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .granted,
             shortcutStatus: .inactive(displayName: "⌘⇧G"),
             selectionState: .permissionRequired
@@ -171,6 +223,7 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
     func testListenerDisabledHasActionableStatus() {
         let snapshot = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .granted,
             permissionStatus: .granted,
             shortcutStatus: .active(displayName: "Double-Shift"),
             selectionState: .failed(.listenerDisabled)
@@ -178,5 +231,17 @@ final class GridSelectStatusSnapshotTests: XCTestCase {
 
         XCTAssertEqual(snapshot.statusTitle, "Grid listener disabled")
         XCTAssertTrue(snapshot.statusDetail.contains("Input Monitoring"))
+    }
+
+    func testListenerDisabledAfterRevocationShowsInputMonitoringRecovery() {
+        let snapshot = GridSelectStatusSnapshot(
+            inputMonitoringStatus: .required,
+            permissionStatus: .granted,
+            shortcutStatus: .inactive(displayName: "Double-Shift"),
+            selectionState: .failed(.listenerDisabled)
+        )
+
+        XCTAssertEqual(snapshot.statusTitle, "Input Monitoring required")
+        XCTAssertEqual(snapshot.statusDetail, GridSelectStatusSnapshot.inputMonitoringGuidance)
     }
 }

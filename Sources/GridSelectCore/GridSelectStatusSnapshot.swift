@@ -23,36 +23,49 @@ public enum ShortcutReadiness: Equatable, Sendable {
 }
 
 public struct GridSelectStatusSnapshot: Equatable, Sendable {
+    public let inputMonitoringStatus: SelectionPermissionStatus
     public let permissionStatus: SelectionPermissionStatus
     public let shortcutStatus: ShortcutReadiness
     public let selectionState: SelectionModeState
 
     public init(
+        inputMonitoringStatus: SelectionPermissionStatus,
         permissionStatus: SelectionPermissionStatus,
         shortcutStatus: ShortcutReadiness,
         selectionState: SelectionModeState
     ) {
+        self.inputMonitoringStatus = inputMonitoringStatus
         self.permissionStatus = permissionStatus
         self.shortcutStatus = shortcutStatus
         self.selectionState = selectionState
     }
 
     public var isReady: Bool {
-        permissionStatus == .granted
+        inputMonitoringStatus == .granted
+            && permissionStatus == .granted
             && shortcutStatus.isActive
             && !selectionState.isActive
             && selectionState != .permissionRequired
     }
 
     public var statusTitle: String {
-        if case .inputMonitoringRequired = shortcutStatus,
-           selectionState == .failed(.shortcutRegistrationFailed)
-        {
+        if (inputMonitoringStatus == .required
+            || shortcutStatus.requiresInputMonitoring),
+           (
+               selectionState == .failed(.shortcutRegistrationFailed)
+                   || selectionState == .failed(.listenerDisabled)
+           ) {
             return "Input Monitoring required"
         }
         switch selectionState {
-        case .selecting, .dragging, .confirmed, .extracting:
-            return "Selection in progress"
+        case .selecting:
+            return "Grid mode armed"
+        case .dragging:
+            return "Adjusting selection"
+        case .confirmed:
+            return "Selection frozen"
+        case .extracting:
+            return "Reading selection"
         case .copying:
             return "Copying selection"
         case .completed:
@@ -70,6 +83,9 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
         if permissionStatus == .required {
             return "Accessibility required"
         }
+        if inputMonitoringStatus == .required {
+            return "Input Monitoring required"
+        }
 
         switch shortcutStatus {
         case .active:
@@ -84,9 +100,12 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
     }
 
     public var statusDetail: String {
-        if case .inputMonitoringRequired = shortcutStatus,
-           selectionState == .failed(.shortcutRegistrationFailed)
-        {
+        if (inputMonitoringStatus == .required
+            || shortcutStatus.requiresInputMonitoring),
+           (
+               selectionState == .failed(.shortcutRegistrationFailed)
+                   || selectionState == .failed(.listenerDisabled)
+           ) {
             return Self.inputMonitoringGuidance
         }
         switch selectionState {
@@ -98,8 +117,14 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
             return Self.accessibilityGuidance
         case let .failed(failure):
             return failure.statusDetail
-        case .selecting, .dragging, .confirmed, .extracting:
-            return "Finish the selection or press Escape to cancel."
+        case .selecting:
+            return "The caret is the zero-area start. Hold Shift and use Arrow keys, or click and drag supported monospace text."
+        case .dragging:
+            return "Adjust the character-cell rectangle, then release Shift or the mouse to freeze it."
+        case .confirmed:
+            return "Press Command-C to copy the nonzero-width rectangle, or Escape to cancel."
+        case .extracting:
+            return "GridSelect is reading the exact bound text source. Press Escape to cancel."
         case .copying:
             return "GridSelect is validating the source and writing rectangular plain text. Press Escape to cancel."
         case .idle:
@@ -108,6 +133,9 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
 
         if permissionStatus == .required {
             return Self.accessibilityGuidance
+        }
+        if inputMonitoringStatus == .required {
+            return Self.inputMonitoringGuidance
         }
 
         switch shortcutStatus {
@@ -140,6 +168,7 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
     }
 
     public func updating(
+        inputMonitoringStatus: SelectionPermissionStatus? = nil,
         permissionStatus: SelectionPermissionStatus? = nil,
         shortcutStatus: ShortcutReadiness? = nil,
         selectionState: SelectionModeState? = nil
@@ -155,6 +184,7 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
         }
 
         return Self(
+            inputMonitoringStatus: inputMonitoringStatus ?? self.inputMonitoringStatus,
             permissionStatus: updatedPermissionStatus,
             shortcutStatus: shortcutStatus ?? self.shortcutStatus,
             selectionState: updatedSelectionState
@@ -162,9 +192,18 @@ public struct GridSelectStatusSnapshot: Equatable, Sendable {
     }
 
     public static let accessibilityGuidance =
-        "Open System Settings, then go to Privacy & Security > Accessibility and enable GridSelect."
+        "Open System Settings, then go to Privacy & Security > Accessibility and enable GridSelect, then recheck."
     public static let inputMonitoringGuidance =
-        "Open System Settings, then go to Privacy & Security > Input Monitoring, enable GridSelect, and use Recheck Permissions."
+        "Open System Settings, then go to Privacy & Security > Input Monitoring, enable GridSelect, and use Recheck Permissions to recheck."
+}
+
+private extension ShortcutReadiness {
+    var requiresInputMonitoring: Bool {
+        if case .inputMonitoringRequired = self {
+            return true
+        }
+        return false
+    }
 }
 
 private extension SelectionModeFailure {

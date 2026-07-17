@@ -459,8 +459,10 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         client.configureMonospace(replacement, lines: ["replaced"])
         client.focused = original
         client.selectedRange = CFRange(location: 1, length: 0)
+        let limits = AccessibilityExtractionLimits(perMessageTimeout: 0.25)
         let service = MacOSAccessibilitySelectionService(
             client: client,
+            limits: limits,
             windowValidator: { _, _ in true },
             secureInputEnabled: { false }
         )
@@ -482,6 +484,7 @@ final class MacOSAccessibilityExtractionEngineTests: XCTestCase {
         default:
             return XCTFail("Expected captured caret")
         }
+        XCTAssertEqual(client.windowLookupTimeoutsByElement["original"]?.first, 0.25)
         var binder = GridSelectionContextBinder(
             activationContext: ActivationSourceContext(
                 activation: activation,
@@ -1188,6 +1191,8 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
     private(set) var textReadsByElement: [String: Int] = [:]
     private(set) var hitTestCallCount = 0
     private(set) var hitTestMessagingTimeouts: [Float] = []
+    private(set) var windowLookupTimeoutsByElement: [String: [Float]] = [:]
+    private var messagingTimeoutByElement: [String: Float] = [:]
 
     func addElement(
         _ id: String,
@@ -1269,12 +1274,27 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
     ) -> AccessibilityElementHandle? {
         hitTestCallCount += 1
         hitTestMessagingTimeouts.append(messagingTimeout)
+        guard let hitTested else {
+            return nil
+        }
+        guard processIdentifier == nil || pid(of: hitTested) == processIdentifier else {
+            return nil
+        }
         return hitTested
     }
-    func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle? {
+    func focusedElement(
+        inProcess processIdentifier: pid_t?,
+        messagingTimeout: Float
+    ) -> AccessibilityElementHandle? {
         if let barrier = focusedElementBarrier {
             barrier.entered.signal()
             _ = barrier.release.wait(timeout: .now() + 2)
+        }
+        guard let focused else {
+            return nil
+        }
+        guard processIdentifier == nil || pid(of: focused) == processIdentifier else {
+            return nil
         }
         return focused
     }
@@ -1310,19 +1330,27 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
     }
 
     func window(of element: AccessibilityElementHandle) -> AccessibilityElementHandle? {
-        guard let windowID = elements[id(element)]?.windowID else {
+        let identifier = id(element)
+        windowLookupTimeoutsByElement[identifier, default: []].append(
+            messagingTimeoutByElement[identifier] ?? -1
+        )
+        guard let windowID = elements[identifier]?.windowID else {
             return nil
         }
         return AccessibilityElementHandle(testIdentifier: windowID)
     }
 
-    func windowCount(inProcess processIdentifier: pid_t) -> Int? {
+    func windowCount(
+        inProcess processIdentifier: pid_t,
+        messagingTimeout: Float
+    ) -> Int? {
         windowsForProcess(processIdentifier).count
     }
 
     func windows(
         inProcess processIdentifier: pid_t,
-        limit: Int
+        limit: Int,
+        messagingTimeout: Float
     ) -> [AccessibilityElementHandle]? {
         let windows = windowsForProcess(processIdentifier)
         return windows.count <= limit ? windows : nil
@@ -1355,7 +1383,9 @@ private final class FakeAccessibilityClient: MacOSAccessibilityClient, @unchecke
     func frame(of element: AccessibilityElementHandle) -> CGRect? { elements[id(element)]?.frame }
     func role(of element: AccessibilityElementHandle) -> String? { elements[id(element)]?.role }
     func subrole(of element: AccessibilityElementHandle) -> String? { elements[id(element)]?.subrole }
-    func setMessagingTimeout(_ seconds: Float, for element: AccessibilityElementHandle) {}
+    func setMessagingTimeout(_ seconds: Float, for element: AccessibilityElementHandle) {
+        messagingTimeoutByElement[id(element)] = seconds
+    }
 
     func parameterizedAttributeNames(of element: AccessibilityElementHandle) -> [String] {
         if let barrier = parameterizedNamesBarrier {

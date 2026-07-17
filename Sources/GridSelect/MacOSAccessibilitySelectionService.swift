@@ -67,8 +67,13 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
                 return .rejected(.permissionRequired)
             }
             guard let focused = client.focusedElement(
-                inProcess: pid_t(source.processIdentifier)
-            ), let preflightWindow = client.window(of: focused) else {
+                inProcess: pid_t(source.processIdentifier),
+                messagingTimeout: limits.perMessageTimeout
+            ) else {
+                return .unavailable
+            }
+            client.setMessagingTimeout(limits.perMessageTimeout, for: focused)
+            guard let preflightWindow = client.window(of: focused) else {
                 return .unavailable
             }
             guard windowValidator(source, sourceWindowFrame),
@@ -159,9 +164,9 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
         }
         guard let display = sourceContext.displays.first(where: {
             $0.appKitFrame.minX <= appKitScreenPoint.x
-                && appKitScreenPoint.x <= $0.appKitFrame.maxX
+                && appKitScreenPoint.x < $0.appKitFrame.maxX
                 && $0.appKitFrame.minY <= appKitScreenPoint.y
-                && appKitScreenPoint.y <= $0.appKitFrame.maxY
+                && appKitScreenPoint.y < $0.appKitFrame.maxY
         }) else {
             return .rejected(.sourceContextInvalid)
         }
@@ -588,12 +593,14 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
         }
         let startUptime = ProcessInfo.processInfo.systemUptime
         guard let windowCount = client.windowCount(
-            inProcess: pid_t(source.processIdentifier)
+            inProcess: pid_t(source.processIdentifier),
+            messagingTimeout: limits.perMessageTimeout
         ),
         windowCount <= limits.maximumWindowsPerProcess,
         let windows = client.windows(
             inProcess: pid_t(source.processIdentifier),
-            limit: limits.maximumWindowsPerProcess
+            limit: limits.maximumWindowsPerProcess,
+            messagingTimeout: limits.perMessageTimeout
         ),
         windows.count == windowCount
         else {
@@ -657,9 +664,9 @@ final class MacOSAccessibilitySelectionService: RectangularTextExtracting, @unch
     ) -> DisplayGeometry? {
         displays.first {
             $0.coreGraphicsBounds.minX <= grid.originX
-                && grid.originX <= $0.coreGraphicsBounds.maxX
+                && grid.originX < $0.coreGraphicsBounds.maxX
                 && $0.coreGraphicsBounds.minY <= grid.originY
-                && grid.originY <= $0.coreGraphicsBounds.maxY
+                && grid.originY < $0.coreGraphicsBounds.maxY
         }
     }
 

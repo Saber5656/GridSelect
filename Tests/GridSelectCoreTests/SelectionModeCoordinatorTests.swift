@@ -1345,6 +1345,17 @@ private final class ImmediateOverlayStub: SelectionOverlayPresenting {
     }
 
     func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        guard onReady() != nil else {
+            return .cancelled
+        }
+        return try await select(onDrag: onDrag)
+    }
+
+    func select(
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult {
         selectionCount += 1
@@ -1401,6 +1412,17 @@ private final class CopyOwningOverlayStub: SelectionOverlayPresenting {
         return try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
         }
+    }
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
+    ) async throws -> SelectionOverlayResult {
+        guard onReady() != nil else {
+            return .cancelled
+        }
+        return try await select(onDrag: onDrag)
     }
 
     func select(
@@ -1575,6 +1597,17 @@ private final class SuspendingOverlayStub: SelectionOverlayPresenting {
         onCopyRequested: @escaping @MainActor @Sendable (
             SelectionCopyRequest
         ) async -> SelectionCopyResult
+    ) async throws -> SelectionOverlayResult {
+        guard onReady() != nil else {
+            return .cancelled
+        }
+        return try await select(onDrag: onDrag)
+    }
+
+    func select(
+        sourceContext: ActivationSourceContext?,
+        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
+        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult {
         guard onReady() != nil else {
             return .cancelled

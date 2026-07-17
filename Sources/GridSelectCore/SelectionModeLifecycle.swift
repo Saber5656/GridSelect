@@ -144,17 +144,6 @@ public protocol SelectionOverlayPresenting: AnyObject {
 
 public extension SelectionOverlayPresenting {
     func select(
-        sourceContext: ActivationSourceContext?,
-        onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
-        onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
-    ) async throws -> SelectionOverlayResult {
-        guard onReady() != nil else {
-            return .cancelled
-        }
-        return try await select(onDrag: onDrag)
-    }
-
-    func select(
         onReady: @escaping @MainActor @Sendable () -> [GridHandoffCommand]?,
         onDrag: @escaping @MainActor @Sendable (SelectionRectangle) -> Void
     ) async throws -> SelectionOverlayResult {

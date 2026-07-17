@@ -77,17 +77,24 @@ protocol MacOSAccessibilityClient: Sendable {
         inProcess processIdentifier: pid_t?,
         messagingTimeout: Float
     ) -> AccessibilityElementHandle?
-    func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle?
+    func focusedElement(
+        inProcess processIdentifier: pid_t?,
+        messagingTimeout: Float
+    ) -> AccessibilityElementHandle?
     func parent(of element: AccessibilityElementHandle) -> AccessibilityElementHandle?
     func boundedChildren(
         of element: AccessibilityElementHandle,
         limit: Int
     ) -> AccessibilityChildrenResult
     func window(of element: AccessibilityElementHandle) -> AccessibilityElementHandle?
-    func windowCount(inProcess processIdentifier: pid_t) -> Int?
+    func windowCount(
+        inProcess processIdentifier: pid_t,
+        messagingTimeout: Float
+    ) -> Int?
     func windows(
         inProcess processIdentifier: pid_t,
-        limit: Int
+        limit: Int,
+        messagingTimeout: Float
     ) -> [AccessibilityElementHandle]?
     func isSameElement(_ lhs: AccessibilityElementHandle, _ rhs: AccessibilityElementHandle) -> Bool
     func pid(of element: AccessibilityElementHandle) -> pid_t?
@@ -171,7 +178,10 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
             messagingTimeout: limits.perMessageTimeout
         )
         try budget.check()
-        let focused = client.focusedElement(inProcess: nil)
+        let focused = client.focusedElement(
+            inProcess: nil,
+            messagingTimeout: limits.perMessageTimeout
+        )
 
         var chains: [[AccessibilityElementHandle]] = []
         var targetPID: pid_t?
@@ -360,7 +370,10 @@ struct MacOSAccessibilityExtractionEngine: Sendable {
         guard requiresFocus else {
             return
         }
-        guard let focused = client.focusedElement(inProcess: requiredPID),
+        guard let focused = client.focusedElement(
+            inProcess: requiredPID,
+            messagingTimeout: limits.perMessageTimeout
+        ),
               try candidateChain(
                   startingAt: focused,
                   requiredPID: requiredPID,
@@ -1005,9 +1018,15 @@ struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
         return AccessibilityElementHandle(rawElement: element)
     }
 
-    func focusedElement(inProcess processIdentifier: pid_t?) -> AccessibilityElementHandle? {
+    func focusedElement(
+        inProcess processIdentifier: pid_t?,
+        messagingTimeout: Float
+    ) -> AccessibilityElementHandle? {
         let root = processIdentifier.map(AXUIElementCreateApplication)
             ?? AXUIElementCreateSystemWide()
+        guard AXUIElementSetMessagingTimeout(root, messagingTimeout) == .success else {
+            return nil
+        }
         guard let value = copyAttribute(root, kAXFocusedUIElementAttribute),
               CFGetTypeID(value) == AXUIElementGetTypeID()
         else {
@@ -1081,9 +1100,14 @@ struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
         return AccessibilityElementHandle(rawElement: value as! AXUIElement)
     }
 
-    func windowCount(inProcess processIdentifier: pid_t) -> Int? {
+    func windowCount(
+        inProcess processIdentifier: pid_t,
+        messagingTimeout: Float
+    ) -> Int? {
         let application = AXUIElementCreateApplication(processIdentifier)
-        _ = AXUIElementSetMessagingTimeout(application, 1)
+        guard AXUIElementSetMessagingTimeout(application, messagingTimeout) == .success else {
+            return nil
+        }
         var count: CFIndex = 0
         guard AXUIElementGetAttributeValueCount(
             application,
@@ -1098,7 +1122,8 @@ struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
 
     func windows(
         inProcess processIdentifier: pid_t,
-        limit: Int
+        limit: Int,
+        messagingTimeout: Float
     ) -> [AccessibilityElementHandle]? {
         guard limit >= 0 else {
             return nil
@@ -1107,7 +1132,9 @@ struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
             return []
         }
         let application = AXUIElementCreateApplication(processIdentifier)
-        _ = AXUIElementSetMessagingTimeout(application, 1)
+        guard AXUIElementSetMessagingTimeout(application, messagingTimeout) == .success else {
+            return nil
+        }
         var values: CFArray?
         guard AXUIElementCopyAttributeValues(
             application,
