@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "id": "keyboard-one-character-horizontal",
+  "description": "One Right event moves the focus by one boundary and selects exactly one character column.",
+  "covers": [
+    "one-character-horizontal-move"
+  ],
+  "start": {
+    "method": "keyboard",
+    "anchor": {
+      "row": 4,
+      "column": 10
+    }
+  },
+  "expectedInitial": {
+    "phase": "adjusting",
+    "anchor": {
+      "row": 4,
+      "column": 10
+    },
+    "focus": {
+      "row": 4,
+      "column": 10
+    },
+    "rowRange": {
+      "start": 4,
+      "end": 5
+    },
+    "columnRange": {
+      "start": 10,
+      "end": 10
+    },
+    "isEmpty": true
+  },
+  "steps": [
+    {
+      "action": "keyboard-move",
+      "direction": "right",
+      "repeat": 1,
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 4,
+          "column": 10
+        },
+        "focus": {
+          "row": 4,
+          "column": 11
+        },
+        "rowRange": {
+          "start": 4,
+          "end": 5
+        },
+        "columnRange": {
+          "start": 10,
+          "end": 11
+        },
+        "isEmpty": false
+      }
+    }
+  ]
+}

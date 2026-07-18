@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "id": "keyboard-anchor-crossing",
+  "description": "Focus shrinks to the immutable anchor and then normalizes a one-column selection on the opposite side.",
+  "covers": [
+    "anchor-crossing"
+  ],
+  "start": {
+    "method": "keyboard",
+    "anchor": {
+      "row": 2,
+      "column": 4
+    }
+  },
+  "expectedInitial": {
+    "phase": "adjusting",
+    "anchor": {
+      "row": 2,
+      "column": 4
+    },
+    "focus": {
+      "row": 2,
+      "column": 4
+    },
+    "rowRange": {
+      "start": 2,
+      "end": 3
+    },
+    "columnRange": {
+      "start": 4,
+      "end": 4
+    },
+    "isEmpty": true
+  },
+  "steps": [
+    {
+      "action": "keyboard-move",
+      "direction": "right",
+      "repeat": 2,
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 2,
+          "column": 4
+        },
+        "focus": {
+          "row": 2,
+          "column": 6
+        },
+        "rowRange": {
+          "start": 2,
+          "end": 3
+        },
+        "columnRange": {
+          "start": 4,
+          "end": 6
+        },
+        "isEmpty": false
+      }
+    },
+    {
+      "action": "keyboard-move",
+      "direction": "left",
+      "repeat": 2,
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 2,
+          "column": 4
+        },
+        "focus": {
+          "row": 2,
+          "column": 4
+        },
+        "rowRange": {
+          "start": 2,
+          "end": 3
+        },
+        "columnRange": {
+          "start": 4,
+          "end": 4
+        },
+        "isEmpty": true
+      }
+    },
+    {
+      "action": "keyboard-move",
+      "direction": "left",
+      "repeat": 1,
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 2,
+          "column": 4
+        },
+        "focus": {
+          "row": 2,
+          "column": 3
+        },
+        "rowRange": {
+          "start": 2,
+          "end": 3
+        },
+        "columnRange": {
+          "start": 3,
+          "end": 4
+        },
+        "isEmpty": false
+      }
+    }
+  ]
+}

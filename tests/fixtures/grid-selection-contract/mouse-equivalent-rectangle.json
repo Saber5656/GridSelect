@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "id": "mouse-equivalent-rectangle",
+  "description": "A mouse drag between the same boundary endpoints matches the paired frozen keyboard selection.",
+  "covers": [
+    "equivalent-mouse-drag"
+  ],
+  "equivalenceGroup": "two-row-two-column",
+  "start": {
+    "method": "mouse",
+    "anchor": {
+      "row": 2,
+      "column": 4
+    }
+  },
+  "expectedInitial": {
+    "phase": "adjusting",
+    "anchor": {
+      "row": 2,
+      "column": 4
+    },
+    "focus": {
+      "row": 2,
+      "column": 4
+    },
+    "rowRange": {
+      "start": 2,
+      "end": 3
+    },
+    "columnRange": {
+      "start": 4,
+      "end": 4
+    },
+    "isEmpty": true
+  },
+  "steps": [
+    {
+      "action": "mouse-move",
+      "boundary": {
+        "row": 3,
+        "column": 6
+      },
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 2,
+          "column": 4
+        },
+        "focus": {
+          "row": 3,
+          "column": 6
+        },
+        "rowRange": {
+          "start": 2,
+          "end": 4
+        },
+        "columnRange": {
+          "start": 4,
+          "end": 6
+        },
+        "isEmpty": false
+      }
+    },
+    {
+      "action": "freeze",
+      "expected": {
+        "phase": "selected",
+        "anchor": {
+          "row": 2,
+          "column": 4
+        },
+        "focus": {
+          "row": 3,
+          "column": 6
+        },
+        "rowRange": {
+          "start": 2,
+          "end": 4
+        },
+        "columnRange": {
+          "start": 4,
+          "end": 6
+        },
+        "isEmpty": false
+      }
+    }
+  ]
+}

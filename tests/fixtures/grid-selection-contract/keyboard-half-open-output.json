@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "id": "keyboard-half-open-output",
+  "description": "The output includes lower row and column bounds while excluding both upper bounds.",
+  "covers": [
+    "half-open-output-range"
+  ],
+  "start": {
+    "method": "keyboard",
+    "anchor": {
+      "row": 0,
+      "column": 1
+    }
+  },
+  "expectedInitial": {
+    "phase": "adjusting",
+    "anchor": {
+      "row": 0,
+      "column": 1
+    },
+    "focus": {
+      "row": 0,
+      "column": 1
+    },
+    "rowRange": {
+      "start": 0,
+      "end": 1
+    },
+    "columnRange": {
+      "start": 1,
+      "end": 1
+    },
+    "isEmpty": true
+  },
+  "steps": [
+    {
+      "action": "keyboard-move",
+      "direction": "right",
+      "repeat": 3,
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 0,
+          "column": 1
+        },
+        "focus": {
+          "row": 0,
+          "column": 4
+        },
+        "rowRange": {
+          "start": 0,
+          "end": 1
+        },
+        "columnRange": {
+          "start": 1,
+          "end": 4
+        },
+        "isEmpty": false
+      }
+    },
+    {
+      "action": "keyboard-move",
+      "direction": "down",
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 0,
+          "column": 1
+        },
+        "focus": {
+          "row": 1,
+          "column": 4
+        },
+        "rowRange": {
+          "start": 0,
+          "end": 2
+        },
+        "columnRange": {
+          "start": 1,
+          "end": 4
+        },
+        "isEmpty": false
+      }
+    }
+  ],
+  "output": {
+    "sourceRows": [
+      "ABCDE",
+      "FGHIJ",
+      "KLMNO"
+    ],
+    "expectedPlainText": "BCD\nGHI"
+  }
+}
