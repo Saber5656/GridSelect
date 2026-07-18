@@ -163,16 +163,19 @@ final class GridActivationInputMachineTests: XCTestCase {
         XCTAssertNil(machine.completeHandoff(for: activation, timestamp: 1.61))
     }
 
-    func testFallbackCompletionDrainsCommandsAtDeadline() {
+    func testDeadlineCancellationDiscardsCommandsAndOnlySucceedsOnce() {
         var machine = activatedMachine()
         let activation = try! XCTUnwrap(machine.activeHandoff)
         _ = machine.handleGuardedKeyDown(.arrow(.right), timestamp: 1.11)
 
         XCTAssertEqual(
-            machine.completeHandoffAtDeadline(for: activation),
-            [.move(.right)]
+            machine.cancelHandoff(for: activation, reason: .timedOut),
+            .handoffCancelled(activation, .timedOut)
         )
+        XCTAssertNil(machine.cancelHandoff(for: activation, reason: .timedOut))
+        XCTAssertNil(machine.completeHandoff(for: activation, timestamp: 1.2))
         XCTAssertNil(machine.activeHandoff)
+        XCTAssertEqual(machine.handleUnclassifiedKeyDown(), .passThrough)
     }
 
     func testFreezeBeforeArrowIsDistinctFromArrowBeforeFreeze() {

@@ -20,6 +20,11 @@ enum MacOSGlobalShortcutError: Error, Equatable, LocalizedError {
     }
 }
 
+struct MacOSCaretCaptureAdapter: Sendable {
+    let capture: @Sendable (ActivationSourceContext) -> MacOSCaretCaptureResult
+    let discard: @Sendable (SelectionSessionIdentity) -> Void
+}
+
 @MainActor
 final class MacOSGlobalShortcut: SelectionShortcutRegistering {
     static let displayName = "Double-Shift"
@@ -34,11 +39,56 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
     private var effectRelay: MacOSGridEventEffectRelay?
     private var timeoutTasks: [UInt64: Task<Void, Never>] = [:]
     private var sourceCaptureTasks: [UInt64: Task<Void, Never>] = [:]
-    private var fallbackHandoffCommands: [UInt64: [GridHandoffCommand]] = [:]
-    private let accessibilityService: MacOSAccessibilitySelectionService?
+    private let handoffTimeout: Duration
+    private let sourceContextCapturer: @MainActor (
+        GridActivation
+    ) -> ActivationSourceContext?
+    private let caretCaptureAdapter: MacOSCaretCaptureAdapter?
 
-    init(accessibilityService: MacOSAccessibilitySelectionService? = nil) {
-        self.accessibilityService = accessibilityService
+    init(
+        accessibilityService: MacOSAccessibilitySelectionService? = nil,
+        handoffTimeout: Duration = .milliseconds(500),
+        sourceContextCapturer: (@MainActor (
+            GridActivation
+        ) -> ActivationSourceContext?)? = nil,
+        caretCaptureAdapter: MacOSCaretCaptureAdapter? = nil,
+        callbackContext: MacOSGridEventTapContext? = nil,
+        eventHandler: (@MainActor @Sendable (SelectionShortcutEvent) -> Void)? = nil
+    ) {
+        self.handoffTimeout = handoffTimeout
+        self.sourceContextCapturer = sourceContextCapturer ?? { activation in
+            MacOSActivationSourceCapturer.capture(
+                activation: activation,
+                accessibilityService: nil
+            )
+        }
+        if let caretCaptureAdapter {
+            self.caretCaptureAdapter = caretCaptureAdapter
+        } else if let accessibilityService {
+            self.caretCaptureAdapter = MacOSCaretCaptureAdapter(
+                capture: { sourceContext in
+                    guard let sessionIdentity = sourceContext.sessionIdentity else {
+                        return .rejected(.sourceContextInvalid)
+                    }
+                    return accessibilityService.captureCaretCandidate(
+                        activation: sourceContext.activation,
+                        sessionIdentity: sessionIdentity,
+                        source: sourceContext.source,
+                        sourceWindowFrame: sourceContext.sourceWindowFrame,
+                        displays: sourceContext.displays
+                    )
+                },
+                discard: { sessionIdentity in
+                    accessibilityService.discardBoundContextsSynchronously(
+                        for: sessionIdentity
+                    )
+                }
+            )
+        } else {
+            self.caretCaptureAdapter = nil
+        }
+        self.callbackContext = callbackContext
+        self.eventHandler = eventHandler
     }
 
     func registerEventHandler(
@@ -50,7 +100,7 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         }
 
         let relay = MacOSGridEventEffectRelay { [weak self] effect in
-            self?.deliver(effect)
+            self?.handleInputEffect(effect)
         }
         let context = MacOSGridEventTapContext(
             doubleClickInterval: NSEvent.doubleClickInterval
@@ -94,12 +144,6 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
     }
 
     func completeHandoff(for activation: GridActivation) -> [GridHandoffCommand]? {
-        if let commands = fallbackHandoffCommands.removeValue(
-            forKey: activation.generation
-        ) {
-            cancelTimeout(for: activation)
-            return commands
-        }
         let commands = callbackContext?.completeHandoff(
             for: activation,
             timestamp: ProcessInfo.processInfo.systemUptime
@@ -114,7 +158,6 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         for activation: GridActivation,
         reason: GridActivationCancellationReason
     ) {
-        fallbackHandoffCommands.removeValue(forKey: activation.generation)
         callbackContext?.cancelHandoff(for: activation, reason: reason)
         cancelTimeout(for: activation)
         cancelSourceCapture(for: activation)
@@ -128,7 +171,6 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         timeoutTasks.removeAll()
         sourceCaptureTasks.values.forEach { $0.cancel() }
         sourceCaptureTasks.removeAll()
-        fallbackHandoffCommands.removeAll()
         callbackContext?.disable()
 
         if let runLoopSource {
@@ -149,24 +191,21 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         }
     }
 
-    private func deliver(_ effect: GridInputEffect) {
+    func handleInputEffect(_ effect: GridInputEffect) {
         guard let eventHandler else {
             return
         }
         switch effect {
         case let .activated(activation):
-            guard let sourceContext = MacOSActivationSourceCapturer.capture(
-                activation: activation,
-                accessibilityService: nil
-            ) else {
+            guard let sourceContext = sourceContextCapturer(activation) else {
                 cancelHandoff(for: activation, reason: .setupFailed)
                 eventHandler(
                     .sourceCaptureFailed(activation, .sourceContextInvalid)
                 )
                 return
             }
-            guard let accessibilityService else {
-                scheduleTimeout(for: activation, fallback: sourceContext)
+            guard let caretCaptureAdapter else {
+                scheduleTimeout(for: activation)
                 eventHandler(.activated(sourceContext))
                 return
             }
@@ -174,19 +213,11 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
                 var delivered = false
                 defer {
                     if !delivered, let sessionIdentity = sourceContext.sessionIdentity {
-                        accessibilityService.discardBoundContextsSynchronously(
-                            for: sessionIdentity
-                        )
+                        caretCaptureAdapter.discard(sessionIdentity)
                     }
                 }
                 let captureTask = Task.detached(priority: .userInitiated) {
-                    accessibilityService.captureCaretCandidate(
-                        activation: activation,
-                        sessionIdentity: sourceContext.sessionIdentity!,
-                        source: sourceContext.source,
-                        sourceWindowFrame: sourceContext.sourceWindowFrame,
-                        displays: sourceContext.displays
-                    )
+                    caretCaptureAdapter.capture(sourceContext)
                 }
                 let result = await withTaskCancellationHandler {
                     await captureTask.value
@@ -226,7 +257,7 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
                 }
             }
             sourceCaptureTasks[activation.generation] = task
-            scheduleTimeout(for: activation, fallback: sourceContext)
+            scheduleTimeout(for: activation)
         case let .handoffCancelled(activation, reason):
             cancelTimeout(for: activation)
             cancelSourceCapture(for: activation)
@@ -239,40 +270,29 @@ final class MacOSGlobalShortcut: SelectionShortcutRegistering {
         }
     }
 
-    private func scheduleTimeout(
-        for activation: GridActivation,
-        fallback sourceContext: ActivationSourceContext
-    ) {
+    private func scheduleTimeout(for activation: GridActivation) {
         cancelTimeout(for: activation)
         timeoutTasks[activation.generation] = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(500))
+                guard let self else {
+                    return
+                }
+                try await Task.sleep(for: self.handoffTimeout)
             } catch {
                 return
             }
             guard let self else {
                 return
             }
-            if let captureTask = self.sourceCaptureTasks.removeValue(
-                forKey: activation.generation
-            ) {
-                guard let commands = self.callbackContext?
-                    .completeHandoffAtDeadline(for: activation)
-                else {
-                    return
-                }
-                captureTask.cancel()
-                self.fallbackHandoffCommands[activation.generation] = commands
-                self.eventHandler?(.activated(sourceContext))
-                return
-            }
-            guard let effect = self.callbackContext?.expireHandoff(
+            self.timeoutTasks.removeValue(forKey: activation.generation)
+            guard let effect = self.callbackContext?.cancelHandoff(
                 for: activation,
-                timestamp: ProcessInfo.processInfo.systemUptime
+                reason: .timedOut
             ) else {
                 return
             }
-            self.deliver(effect)
+            self.cancelSourceCapture(for: activation)
+            self.handleInputEffect(effect)
         }
     }
 
@@ -670,23 +690,13 @@ final class MacOSGridEventTapContext: @unchecked Sendable {
         }
     }
 
-    func completeHandoffAtDeadline(
-        for activation: GridActivation
-    ) -> [GridHandoffCommand]? {
-        lock.withLock {
-            guard isEnabled else {
-                return nil
-            }
-            return machine.completeHandoffAtDeadline(for: activation)
-        }
-    }
-
+    @discardableResult
     func cancelHandoff(
         for activation: GridActivation,
         reason: GridActivationCancellationReason
-    ) {
+    ) -> GridInputEffect? {
         lock.withLock {
-            _ = machine.cancelHandoff(for: activation, reason: reason)
+            machine.cancelHandoff(for: activation, reason: reason)
         }
     }
 
