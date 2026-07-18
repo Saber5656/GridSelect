@@ -25,14 +25,29 @@ body:
     validations:
       required: true
   - type: dropdown
-    id: permission-state
+    id: input-monitoring-state
     attributes:
-      label: Permission state
-      description: Choose the closest known state when the issue happened.
+      label: Input Monitoring state
+      description: Choose the Input Monitoring state when the issue happened.
       options:
-        - Accessibility granted
-        - Accessibility not granted
+        - Granted
+        - Not granted
         - Permission prompt shown
+        - Revoked during the session
+        - Unknown
+        - Not applicable
+    validations:
+      required: true
+  - type: dropdown
+    id: accessibility-state
+    attributes:
+      label: Accessibility state
+      description: Choose the Accessibility state when the issue happened.
+      options:
+        - Granted
+        - Not granted
+        - Permission prompt shown
+        - Revoked during the session
         - Unknown
         - Not applicable
     validations:
@@ -67,7 +82,7 @@ body:
     id: sample-text
     attributes:
       label: Sample text or fixture
-      description: Include a minimal plain-text sample if it helps reproduce the issue. Do not include secrets.
+      description: Use synthetic or safely redacted text if it helps reproduce the issue. Do not include secrets, private data, or customer data.
       render: text
   - type: textarea
     id: notes

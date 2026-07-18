@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "id": "keyboard-adjacent-row-expansion",
+  "description": "Down extends a one-column selection to the adjacent visual row while preserving its width.",
+  "covers": [
+    "adjacent-row-multi-cursor-expansion"
+  ],
+  "start": {
+    "method": "keyboard",
+    "anchor": {
+      "row": 4,
+      "column": 10
+    }
+  },
+  "expectedInitial": {
+    "phase": "adjusting",
+    "anchor": {
+      "row": 4,
+      "column": 10
+    },
+    "focus": {
+      "row": 4,
+      "column": 10
+    },
+    "rowRange": {
+      "start": 4,
+      "end": 5
+    },
+    "columnRange": {
+      "start": 10,
+      "end": 10
+    },
+    "isEmpty": true
+  },
+  "steps": [
+    {
+      "action": "keyboard-move",
+      "direction": "right",
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 4,
+          "column": 10
+        },
+        "focus": {
+          "row": 4,
+          "column": 11
+        },
+        "rowRange": {
+          "start": 4,
+          "end": 5
+        },
+        "columnRange": {
+          "start": 10,
+          "end": 11
+        },
+        "isEmpty": false
+      }
+    },
+    {
+      "action": "keyboard-move",
+      "direction": "down",
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 4,
+          "column": 10
+        },
+        "focus": {
+          "row": 5,
+          "column": 11
+        },
+        "rowRange": {
+          "start": 4,
+          "end": 6
+        },
+        "columnRange": {
+          "start": 10,
+          "end": 11
+        },
+        "isEmpty": false
+      }
+    }
+  ]
+}

@@ -1,76 +1,92 @@
 # GridSelect
 
 GridSelect is a pre-alpha macOS utility for copying rectangular regions from
-plain-text, monospace content. It is intended for cases where normal linear text
-selection makes it hard to copy columns, aligned fields, or fixed-width slices.
+visible, monospace plain text. It is intended for columns, aligned fields, logs,
+and other fixed-width content where normal linear selection is awkward.
 
-The project is experimental and has a minimal Swift package scaffold, but no
-packaged build or supported release yet. Current work is focused on proving the
-macOS MVP and the narrow system-integration path needed for the core
-interaction.
+> [!WARNING]
+> GridSelect does not have a supported download or release yet. The current MVP
+> is run from source and is not packaged, signed, or notarized. Treat it as early
+> validation software, not as a production-ready utility.
+
+## Current Status
+
+| Area | Current state |
+|---|---|
+| Platform | macOS 13 or newer; Windows and Linux are not supported. |
+| MVP interaction | The current source includes Double-Shift activation, permission/status UI, a rectangular overlay, keyboard and mouse selection, Accessibility-backed extraction, and plain-text clipboard copy. |
+| Target apps | Compatibility is best effort and depends on the source app exposing stable Accessibility text and range geometry. Broad target-app manual QA is not complete. |
+| Distribution | Source build only. There is no supported `.app`, package, tag, or GitHub Release. |
+| Stability | Pre-alpha behavior, settings, and compatibility may change. |
 
 ## MVP Scope
 
-The first MVP is intentionally small:
-
-| Area | MVP direction |
+| Area | MVP behavior |
 |---|---|
-| Platform | macOS first |
-| Source content | Plain-text or plain-text-like monospace regions |
-| Activation | User-invoked global shortcut |
-| Selection | Temporary rectangular overlay across visible text |
-| Extraction | Best-effort row and column mapping for the selected rectangle |
-| Output | Plain text copied to the system clipboard |
+| Source content | Visible, plain-text or plain-text-like monospace regions with stable character-cell geometry |
+| Activation | Double-tap Shift while the source app is frontmost |
+| Keyboard selection | Start at the zero-area insertion caret; hold the second Shift and use Arrow keys |
+| Mouse selection | Use the first overlay click as the anchor, then drag across the character-cell grid |
+| Freeze | Release Shift or the mouse button; the rectangle remains visible and is not copied yet |
+| Copy or cancel | Press Command-C to copy a nonzero-width rectangle as plain text, or Escape to cancel |
 
-The MVP succeeds when a user can invoke GridSelect, draw a rectangle over visible
-monospace text, and copy the corresponding row and column slice without changing
-the source application.
+GridSelect is text-first. OCR, screenshots, images, PDF extraction, rich-text
+layout, AI processing, structured spreadsheet export, and app-specific
+integrations are outside the MVP.
 
-## Non-goals
+## Build and Run
 
-GridSelect is not trying to solve every selection or extraction problem in the
-first release. These areas are intentionally outside the MVP:
+You need macOS 13 or newer and a Swift 6.0-or-newer toolchain. A full Xcode
+installation is recommended for the same SwiftPM and XCTest environment used by
+the project.
 
-- OCR or screenshot-based extraction.
-- PDF-specific extraction.
-- Image handling.
-- AI summarization or table inference.
-- Replacing normal native text selection.
-- App-specific optimizations for Word, Excel, Slack, Notion, or similar apps.
-- Windows or Linux support before the macOS MVP is proven.
+From the repository root:
 
-Requests in these areas should be captured in the
-[deferred scope tracker](docs/deferred-scope-tracker.md) instead of becoming MVP
-requirements.
+```sh
+swift build
+swift run GridSelect
+```
 
-## Project Status
+GridSelect appears as a menu-bar item. Before Double-Shift can perform a complete
+selection, grant **Input Monitoring** for the activation listener and
+**Accessibility** for text and caret geometry. These are independent macOS
+permissions; follow the separate setup procedures in the
+[usage guide](docs/usage.md#permission-setup).
 
-| Area | Status |
-|---|---|
-| Product requirements | Drafted for the macOS-first MVP. |
-| Architecture | Proposed native macOS architecture using Swift, SwiftUI, AppKit, and Accessibility APIs. |
-| Implementation | Minimal Swift package scaffold exists; core system integrations are not implemented yet. |
-| Releases | No supported release or package is available; see the pre-alpha release checklist before tagging or packaging. |
-| Contributions | Welcome through focused issues and pull requests that fit the MVP boundary. |
+## Basic Use
+
+1. Focus visible monospace text in another app. For keyboard selection, place
+   its insertion caret at one corner of the intended rectangle.
+2. Double-tap Shift. Keep the second Shift held for the keyboard path.
+3. Use Left/Right to change the width and Up/Down to include adjacent visual
+   rows, or click and drag with the mouse.
+4. Release Shift or the mouse button to freeze the rectangle.
+5. Press Command-C to copy, or Escape to cancel without copying.
+
+A zero-area caret contains no columns, so Command-C leaves the clipboard
+unchanged until the selection has nonzero width. See
+[Using GridSelect](docs/usage.md) for permission setup, both selection paths,
+troubleshooting, privacy behavior, and known limitations.
 
 ## Documentation
 
+- [Using GridSelect: build, permissions, selection, and troubleshooting](docs/usage.md)
 - [Product requirements and MVP boundary](docs/product-requirements.md)
-- [ADR 0001: Native macOS architecture for the MVP](docs/adr/0001-macos-native-mvp-architecture.md)
+- [MVP target-app matrix and manual fixtures](docs/mvp-target-app-matrix.md)
+- [Clipboard output format](docs/clipboard-output-format.md)
+- [Native macOS architecture](docs/adr/0001-macos-native-mvp-architecture.md)
 - [Windows and Linux feasibility research](docs/cross-platform-feasibility.md)
 - [Deferred scope tracker](docs/deferred-scope-tracker.md)
-- [Issue parallel execution plan](docs/issue-parallel-execution-plan.md)
 - [Pre-alpha release checklist](docs/pre-alpha-release-checklist.md)
-- [Repository hardening audit](docs/repository-hardening-audit.md)
 
-## Contributing
+## Contributing and Security
 
-Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md) and keep
-changes focused on an existing issue or a small proposal. Security reports should
-follow [SECURITY.md](SECURITY.md), not public issue details.
-
-All contributors are expected to follow the
+Focused, issue-linked contributions are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Do not disclose vulnerabilities or sensitive text in a public issue. Follow the
+private reporting guidance in [SECURITY.md](SECURITY.md).
 
 ## License
 

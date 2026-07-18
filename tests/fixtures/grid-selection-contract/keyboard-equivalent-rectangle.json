@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "id": "keyboard-equivalent-rectangle",
+  "description": "Keyboard boundary moves produce the same frozen two-row by two-column rectangle as the paired mouse drag.",
+  "covers": [
+    "equivalent-mouse-drag"
+  ],
+  "equivalenceGroup": "two-row-two-column",
+  "start": {
+    "method": "keyboard",
+    "anchor": {
+      "row": 2,
+      "column": 4
+    }
+  },
+  "expectedInitial": {
+    "phase": "adjusting",
+    "anchor": {
+      "row": 2,
+      "column": 4
+    },
+    "focus": {
+      "row": 2,
+      "column": 4
+    },
+    "rowRange": {
+      "start": 2,
+      "end": 3
+    },
+    "columnRange": {
+      "start": 4,
+      "end": 4
+    },
+    "isEmpty": true
+  },
+  "steps": [
+    {
+      "action": "keyboard-move",
+      "direction": "right",
+      "repeat": 2,
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 2,
+          "column": 4
+        },
+        "focus": {
+          "row": 2,
+          "column": 6
+        },
+        "rowRange": {
+          "start": 2,
+          "end": 3
+        },
+        "columnRange": {
+          "start": 4,
+          "end": 6
+        },
+        "isEmpty": false
+      }
+    },
+    {
+      "action": "keyboard-move",
+      "direction": "down",
+      "expected": {
+        "phase": "adjusting",
+        "anchor": {
+          "row": 2,
+          "column": 4
+        },
+        "focus": {
+          "row": 3,
+          "column": 6
+        },
+        "rowRange": {
+          "start": 2,
+          "end": 4
+        },
+        "columnRange": {
+          "start": 4,
+          "end": 6
+        },
+        "isEmpty": false
+      }
+    },
+    {
+      "action": "freeze",
+      "expected": {
+        "phase": "selected",
+        "anchor": {
+          "row": 2,
+          "column": 4
+        },
+        "focus": {
+          "row": 3,
+          "column": 6
+        },
+        "rowRange": {
+          "start": 2,
+          "end": 4
+        },
+        "columnRange": {
+          "start": 4,
+          "end": 6
+        },
+        "isEmpty": false
+      }
+    }
+  ]
+}

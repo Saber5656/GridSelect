@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "keyboard-zero-width",
+  "description": "A keyboard caret binds with one participating row and an empty half-open column range.",
+  "covers": [
+    "zero-width"
+  ],
+  "start": {
+    "method": "keyboard",
+    "anchor": {
+      "row": 4,
+      "column": 10
+    }
+  },
+  "expectedInitial": {
+    "phase": "adjusting",
+    "anchor": {
+      "row": 4,
+      "column": 10
+    },
+    "focus": {
+      "row": 4,
+      "column": 10
+    },
+    "rowRange": {
+      "start": 4,
+      "end": 5
+    },
+    "columnRange": {
+      "start": 10,
+      "end": 10
+    },
+    "isEmpty": true
+  },
+  "steps": []
+}
