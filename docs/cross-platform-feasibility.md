@@ -4,7 +4,7 @@
 |---|---|
 | Issue | [#21](https://github.com/Saber5656/GridSelect/issues/21) |
 | Status | Research complete; implementation not started |
-| Evidence date | 2026-07-18 |
+| Evidence date | 2026-07-18 Asia/Tokyo (2026-07-17 UTC) |
 
 ## Purpose and Evidence Boundary
 
@@ -216,7 +216,7 @@ and bounded ranges. Coordinate values distinguish screen, window, and parent
 space through [`AtspiCoordType`](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/enum.CoordType.html).
 That interface is conceptually promising, but the enum and method surface alone
 does not prove usable screen geometry. For example, the current GTK 4
-[`gtkatspitext.c` provider](https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gtk/a11y/gtkatspitext.c)
+[`gtkatspitext.c` provider](https://gitlab.gnome.org/GNOME/gtk/-/blob/0de20adcf206d7e26396a16660ea6ebe76d13091/gtk/a11y/gtkatspitext.c)
 rejects `ATSPI_COORD_TYPE_SCREEN` for point and character/range extent queries
 and reports bounded ranges as unsupported. On Wayland, an adapter would then
 need to correlate parent- or window-relative text extents with compositor-owned
