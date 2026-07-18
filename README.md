@@ -75,6 +75,7 @@ troubleshooting, privacy behavior, and known limitations.
 - [MVP target-app matrix and manual fixtures](docs/mvp-target-app-matrix.md)
 - [Clipboard output format](docs/clipboard-output-format.md)
 - [Native macOS architecture](docs/adr/0001-macos-native-mvp-architecture.md)
+- [Windows and Linux feasibility research](docs/cross-platform-feasibility.md)
 - [Deferred scope tracker](docs/deferred-scope-tracker.md)
 - [Pre-alpha release checklist](docs/pre-alpha-release-checklist.md)
 
