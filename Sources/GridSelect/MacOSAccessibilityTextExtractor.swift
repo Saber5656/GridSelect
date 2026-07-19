@@ -1035,6 +1035,20 @@ struct SystemMacOSAccessibilityClient: MacOSAccessibilityClient {
         return AccessibilityElementHandle(rawElement: value as! AXUIElement)
     }
 
+    func focusedWindow(
+        inProcess processIdentifier: pid_t,
+        messagingTimeout: Float
+    ) -> AccessibilityElementHandle? {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        guard AXUIElementSetMessagingTimeout(application, messagingTimeout) == .success,
+              let value = copyAttribute(application, kAXFocusedWindowAttribute),
+              CFGetTypeID(value) == AXUIElementGetTypeID()
+        else {
+            return nil
+        }
+        return AccessibilityElementHandle(rawElement: value as! AXUIElement)
+    }
+
     func parent(of element: AccessibilityElementHandle) -> AccessibilityElementHandle? {
         guard let rawElement = element.rawElement,
               let value = copyAttribute(rawElement, kAXParentAttribute),
