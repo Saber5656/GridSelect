@@ -496,9 +496,39 @@ enum MacOSActivationSourceCapturer {
         return lastExternalApplication
     }
 
-    private struct WindowSnapshot {
+    struct WindowSnapshot: Equatable {
         let identifier: UInt32
         let frame: CGRect
+    }
+
+    enum FocusedWindowResolution: Equatable {
+        case notTrusted
+        case resolved(CGRect)
+        case queryFailed
+    }
+
+    static func preferredWindow(
+        candidates: [WindowSnapshot],
+        focusedWindowResolution: FocusedWindowResolution
+    ) -> WindowSnapshot? {
+        switch focusedWindowResolution {
+        case .notTrusted:
+            return candidates.first
+        case .queryFailed:
+            return nil
+        case let .resolved(focusedWindowFrame):
+            let tolerance = 1.0
+            let matches = candidates.filter { candidate in
+                abs(candidate.frame.minX - focusedWindowFrame.minX) <= tolerance
+                    && abs(candidate.frame.minY - focusedWindowFrame.minY) <= tolerance
+                    && abs(candidate.frame.width - focusedWindowFrame.width) <= tolerance
+                    && abs(candidate.frame.height - focusedWindowFrame.height) <= tolerance
+            }
+            guard matches.count == 1 else {
+                return nil
+            }
+            return matches[0]
+        }
     }
 
     private static func frontmostWindow(for processIdentifier: pid_t) -> WindowSnapshot? {
@@ -508,6 +538,7 @@ enum MacOSActivationSourceCapturer {
         ) as? [[String: Any]] else {
             return nil
         }
+        var candidates: [WindowSnapshot] = []
         for window in rawWindows {
             guard (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
                     == processIdentifier,
@@ -524,9 +555,41 @@ enum MacOSActivationSourceCapturer {
             else {
                 continue
             }
-            return WindowSnapshot(identifier: identifier, frame: frame)
+            candidates.append(WindowSnapshot(identifier: identifier, frame: frame))
         }
-        return nil
+        guard candidates.count > 1 else {
+            return candidates.first
+        }
+        return preferredWindow(
+            candidates: candidates,
+            focusedWindowResolution: focusedWindowResolution(
+                for: processIdentifier
+            )
+        )
+    }
+
+    private static func focusedWindowResolution(
+        for processIdentifier: pid_t
+    ) -> FocusedWindowResolution {
+        let client = SystemMacOSAccessibilityClient()
+        guard client.isTrusted else {
+            return .notTrusted
+        }
+        // Keep this synchronous MainActor lookup to three bounded AX reads:
+        // focused window, position, and size. The longer focused-element
+        // traversal runs later on the detached caret-capture path.
+        let timeout: Float = 0.1
+        guard let focusedWindow = client.focusedWindow(
+            inProcess: processIdentifier,
+            messagingTimeout: timeout
+        ) else {
+            return .queryFailed
+        }
+        client.setMessagingTimeout(timeout, for: focusedWindow)
+        guard let frame = client.frame(of: focusedWindow) else {
+            return .queryFailed
+        }
+        return .resolved(frame)
     }
 }
 
